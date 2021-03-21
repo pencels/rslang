@@ -1,29 +1,42 @@
 mod operator_trie;
-mod token;
+pub mod token;
+
+use std::str::Chars;
 
 use lookahead::{lookahead, Lookahead};
 
 pub use self::operator_trie::OperatorTrie;
-pub use crate::lexer::token::*;
-use crate::util::{PResult, Span};
+use self::token::{Token, TokenType};
+
+use crate::{
+    parser::result::{ParseError, ParseResult},
+    util::{FileId, Span},
+};
 
 /// Mnemonic for the EOF end-of-file character.
 const EOF: char = '\x00';
 
-pub type SpanToken = (usize, Token, usize);
-
-pub struct Lexer<Chars: Iterator<Item = char>> {
-    stream: Lookahead<Chars>,
+pub struct Lexer<'file, 'trie> {
+    file_id: FileId,
+    stream: Lookahead<Chars<'file>>,
 
     /// The trie determining max-munch operator chunky lip smack goodness.
-    operator_trie: OperatorTrie,
+    operator_trie: &'trie mut OperatorTrie,
     /// Whether the lexer should use the trie to lex operators, or if it should blindly lex them.
     use_trie: bool,
 
+    /// The 0-indexed char position of the first char considered for the current token being lexed.
+    start_pos: usize,
+    /// The 0-indexed char position of `current_char`.
     current_pos: usize,
+    /// The current character in the stream.
     current_char: char,
+    /// The next character in the stream.
     next_char: char,
 
+    /// Stack of string interpolation parentheses counts. Each stack position represents a string
+    /// interpolation context. The value at each position represents how many open parens
+    /// were encountered in the context.
     interp_parenthetical: Vec<usize>,
 }
 
@@ -33,19 +46,18 @@ pub enum LexStringChar {
     InterpolateBegin,
 }
 
-impl<Chars: Iterator<Item = char>> Lexer<Chars> {
-    pub fn new(chars: Chars) -> Lexer<Chars> {
-        let mut operator_trie = OperatorTrie::new();
-        operator_trie.insert_operator("+");
-        operator_trie.insert_operator("-");
-        operator_trie.insert_operator("*");
-        operator_trie.insert_operator("/");
-        operator_trie.insert_operator("++");
-
+impl<'file, 'trie> Lexer<'file, 'trie> {
+    pub fn new(
+        file_id: FileId,
+        source: &'file str,
+        operator_trie: &'trie mut OperatorTrie,
+    ) -> Lexer<'file, 'trie> {
         let mut lex = Lexer {
-            stream: lookahead(chars),
+            file_id,
+            stream: lookahead(source.chars()),
             operator_trie,
             use_trie: true,
+            start_pos: 0,
             current_pos: 0,
             current_char: EOF,
             next_char: EOF,
@@ -57,16 +69,33 @@ impl<Chars: Iterator<Item = char>> Lexer<Chars> {
         lex
     }
 
-    fn spanned_lex(&mut self) -> PResult<SpanToken> {
-        self.discard_whitespace_or_comments()?;
-
-        let start = self.current_pos;
-        let t = self.lex()?;
-        let end = self.current_pos;
-
-        Ok((start, t, end))
+    /// Adds an operator to the trie.
+    pub fn add_operator(&mut self, operator: &str) {
+        self.operator_trie.insert_operator(operator);
     }
 
+    /// Tells the lexer whether it should use its operator trie or not.
+    pub fn should_use_trie(&mut self, should: bool) {
+        self.use_trie = should;
+    }
+
+    pub fn current_span(&self) -> Span {
+        Span::new(self.file_id, self.current_pos, self.current_pos + 1)
+    }
+
+    fn spanned_lex(&mut self) -> ParseResult<Token> {
+        self.discard_whitespace_or_comments()?;
+
+        self.start_pos = self.current_pos;
+        let t = self.lex()?;
+
+        Ok(Token::new(
+            Span::new(self.file_id, self.start_pos, self.current_pos),
+            t,
+        ))
+    }
+
+    /// Cautiously bumps the input stream, avoiding reading past a '\n' character.
     fn bump(&mut self, n: usize) {
         for _ in 0..n {
             self.current_char = self.stream.next().unwrap_or(EOF);
@@ -75,7 +104,7 @@ impl<Chars: Iterator<Item = char>> Lexer<Chars> {
         }
     }
 
-    fn discard_whitespace_or_comments(&mut self) -> PResult<()> {
+    fn discard_whitespace_or_comments(&mut self) -> ParseResult<()> {
         loop {
             // Consume any whitespace or comments before a real token
             match self.current_char {
@@ -97,7 +126,7 @@ impl<Chars: Iterator<Item = char>> Lexer<Chars> {
         Ok(())
     }
 
-    fn scan_comment(&mut self) -> PResult<()> {
+    fn scan_comment(&mut self) -> ParseResult<()> {
         match self.next_char {
             '-' => {
                 // Read until end of line.
@@ -116,13 +145,15 @@ impl<Chars: Iterator<Item = char>> Lexer<Chars> {
     }
 
     /// Returns the next lookahead token.
-    fn lex(&mut self) -> PResult<Token> {
+    fn lex(&mut self) -> ParseResult<TokenType> {
         let c = self.current_char;
 
         if c == EOF {
-            Ok(Token::Eof)
+            Ok(TokenType::Eof)
         } else if c == '"' {
             self.scan_string()
+        } else if c == '`' {
+            self.scan_delimited_operator()
         } else if is_numeric(c) {
             self.scan_numeric_literal()
         } else if is_identifier_start(c) {
@@ -131,14 +162,14 @@ impl<Chars: Iterator<Item = char>> Lexer<Chars> {
             match c {
                 '\n' => {
                     self.bump(1);
-                    Ok(Token::Newline)
+                    Ok(TokenType::Newline)
                 }
                 '.' => {
                     if self.next_char == '.' {
                         self.bump(1);
                         if self.next_char == '.' {
                             self.bump(2);
-                            Ok(Token::Ellipsis)
+                            Ok(TokenType::Ellipsis)
                         } else {
                             self.scan_custom_operator("..")
                         }
@@ -148,35 +179,35 @@ impl<Chars: Iterator<Item = char>> Lexer<Chars> {
                 }
                 ',' => {
                     self.bump(1);
-                    Ok(Token::Comma)
+                    Ok(TokenType::Comma)
                 }
                 ':' => {
                     if self.next_char == ':' {
                         self.bump(2);
-                        Ok(Token::ColonColon)
+                        Ok(TokenType::ColonColon)
                     } else {
                         self.scan_atom()
                     }
                 }
                 ';' => {
                     self.bump(1);
-                    Ok(Token::Semicolon)
+                    Ok(TokenType::Semicolon)
                 }
                 '{' => {
                     self.bump(1);
-                    Ok(Token::LCurly)
+                    Ok(TokenType::LCurly)
                 }
                 '}' => {
                     self.bump(1);
-                    Ok(Token::RCurly)
+                    Ok(TokenType::RCurly)
                 }
                 '[' => {
                     self.bump(1);
-                    Ok(Token::LSquare)
+                    Ok(TokenType::LSquare)
                 }
                 ']' => {
                     self.bump(1);
-                    Ok(Token::RSquare)
+                    Ok(TokenType::RSquare)
                 }
                 '(' => {
                     self.bump(1);
@@ -185,7 +216,7 @@ impl<Chars: Iterator<Item = char>> Lexer<Chars> {
                         *nest += 1;
                     }
 
-                    Ok(Token::LParen)
+                    Ok(TokenType::LParen)
                 }
                 ')' => {
                     if let Some(0) = self.interp_parenthetical.last() {
@@ -196,26 +227,31 @@ impl<Chars: Iterator<Item = char>> Lexer<Chars> {
                         }
 
                         self.bump(1);
-                        Ok(Token::RParen)
+                        Ok(TokenType::RParen)
                     }
                 }
                 '=' => {
-                    self.bump(1);
-                    Ok(Token::Eq)
+                    if is_operator_boundary(self.next_char) {
+                        self.bump(1);
+                        Ok(TokenType::Eq)
+                    } else {
+                        self.scan_custom_operator("=")
+                    }
                 }
                 '-' => {
                     if is_numeric(self.next_char) {
+                        self.bump(1);
                         self.scan_numeric_literal()
                     } else if self.next_char == '>' {
                         self.bump(2);
-                        Ok(Token::Arrow)
+                        Ok(TokenType::Arrow)
                     } else {
-                        self.bump(1);
                         self.scan_custom_operator("-")
                     }
                 }
                 '+' => {
                     if is_numeric(self.next_char) {
+                        self.bump(1);
                         self.scan_numeric_literal()
                     } else {
                         self.scan_custom_operator("+")
@@ -223,21 +259,54 @@ impl<Chars: Iterator<Item = char>> Lexer<Chars> {
                 }
                 '\\' => {
                     self.bump(1);
-                    Ok(Token::Backslash)
+                    Ok(TokenType::Backslash)
                 }
-                c => perror_at!(
-                    Span::new(self.current_pos, self.current_pos + 1),
-                    "Unknown symbol '{}'",
-                    c
-                ),
+                c => {
+                    if is_operator_start(c) {
+                        let leading = c.to_string();
+                        self.scan_custom_operator(&leading)
+                    } else {
+                        self.bump(1);
+                        Err(ParseError::UnknownChar {
+                            c,
+                            span: Span::new(self.file_id, self.current_pos, self.current_pos + 1),
+                        })
+                    }
+                }
             }
         }
     }
 
+    /// Scans a delimited operator ````op````.
+    fn scan_delimited_operator(&mut self) -> ParseResult<TokenType> {
+        self.bump(1); // Blindly consume the quote character
+        let mut string = String::new();
+
+        loop {
+            match self.current_char {
+                '`' => break,
+                '\r' | '\n' | EOF => {
+                    self.bump(1);
+                    return Err(ParseError::EofInDelimitedOperator {
+                        span: Span::new(self.file_id, self.current_pos, self.current_pos + 1),
+                    });
+                }
+                c => {
+                    string.push(c);
+                    self.bump(1);
+                }
+            }
+        }
+
+        self.bump(1); // Bump the close quote.
+
+        Ok(TokenType::Op(string))
+    }
+
     /// Scans a custom operator.
-    fn scan_custom_operator(&mut self, leading: &str) -> PResult<Token> {
+    fn scan_custom_operator(&mut self, leading: &str) -> ParseResult<TokenType> {
         if !self.use_trie {
-            return self.scan_arbitrary_operator(leading.to_owned());
+            return Ok(self.scan_arbitrary_operator(leading.to_owned()));
         }
 
         let mut operator = leading.to_owned();
@@ -249,7 +318,7 @@ impl<Chars: Iterator<Item = char>> Lexer<Chars> {
         while node.is_some() {
             match self.stream.lookahead(lookahead) {
                 Some(&c) => {
-                    if is_operator_boundary(c) {
+                    if !is_operator_cont(c) {
                         break;
                     }
                     node = node.and_then(|node| node.get_child(c));
@@ -264,19 +333,25 @@ impl<Chars: Iterator<Item = char>> Lexer<Chars> {
 
         match last_end {
             Some(n) => {
-                self.bump(1);
+                self.bump(1); // Bump past the last leading character.
                 for _ in 0..n {
                     operator.push(self.current_char);
                     self.bump(1);
                 }
 
-                Ok(Token::Op(operator))
+                Ok(TokenType::Op(operator))
             }
-            _ => self.scan_arbitrary_operator(operator),
+            _ => {
+                if let TokenType::Op(operator) = self.scan_arbitrary_operator(operator) {
+                    Ok(TokenType::UnknownOp(operator))
+                } else {
+                    unreachable!("ICE: scan_arbitrary_operator returned not an operator token");
+                }
+            }
         }
     }
 
-    fn scan_arbitrary_operator(&mut self, leading: String) -> PResult<Token> {
+    fn scan_arbitrary_operator(&mut self, leading: String) -> TokenType {
         let mut operator = leading;
 
         self.bump(1);
@@ -285,11 +360,11 @@ impl<Chars: Iterator<Item = char>> Lexer<Chars> {
             self.bump(1);
         }
 
-        Ok(Token::Op(operator))
+        TokenType::Op(operator)
     }
 
     /// Scans an atom token.
-    fn scan_atom(&mut self) -> PResult<Token> {
+    fn scan_atom(&mut self) -> ParseResult<TokenType> {
         self.bump(1); // Eat the leading colon.
         let mut atom = String::new();
 
@@ -308,17 +383,16 @@ impl<Chars: Iterator<Item = char>> Lexer<Chars> {
 
         // No empty atoms :)
         if atom.len() == 0 {
-            return perror_at!(
-                Span::new(self.current_pos - 1, self.current_pos),
-                "Expected characters after `:` for atom name, none found",
-            );
+            Err(ParseError::EmptyAtom {
+                span: Span::new(self.file_id, self.current_pos - 1, self.current_pos),
+            })
+        } else {
+            Ok(TokenType::Atom(atom))
         }
-
-        Ok(Token::Atom(atom))
     }
 
     /// Scans a new parsed string token.
-    fn scan_string(&mut self) -> PResult<Token> {
+    fn scan_string(&mut self) -> ParseResult<TokenType> {
         self.bump(1); // Blindly consume the quote character
         let mut string = String::new();
 
@@ -328,17 +402,17 @@ impl<Chars: Iterator<Item = char>> Lexer<Chars> {
                     string.push(c);
                 }
                 LexStringChar::QuoteEnd => {
-                    return Ok(Token::Str(string));
+                    return Ok(TokenType::Str(string));
                 }
                 LexStringChar::InterpolateBegin => {
                     self.interp_parenthetical.push(0);
-                    return Ok(Token::InterpolateBegin(string));
+                    return Ok(TokenType::InterpolateBegin(string));
                 }
             }
         }
     }
 
-    fn scan_interp_continue(&mut self) -> PResult<Token> {
+    fn scan_interp_continue(&mut self) -> ParseResult<TokenType> {
         self.bump(1); // Blindly consume the rparen character
         let mut string = String::new();
 
@@ -349,16 +423,16 @@ impl<Chars: Iterator<Item = char>> Lexer<Chars> {
                 }
                 LexStringChar::QuoteEnd => {
                     self.interp_parenthetical.pop();
-                    return Ok(Token::InterpolateEnd(string));
+                    return Ok(TokenType::InterpolateEnd(string));
                 }
                 LexStringChar::InterpolateBegin => {
-                    return Ok(Token::InterpolateContinue(string));
+                    return Ok(TokenType::InterpolateContinue(string));
                 }
             }
         }
     }
 
-    fn scan_string_char(&mut self) -> PResult<LexStringChar> {
+    fn scan_string_char(&mut self) -> ParseResult<LexStringChar> {
         let ret;
 
         match self.current_char {
@@ -386,11 +460,10 @@ impl<Chars: Iterator<Item = char>> Lexer<Chars> {
                         ret = LexStringChar::InterpolateBegin;
                     }
                     c => {
-                        return perror_at!(
-                            Span::new(self.current_pos, self.current_pos + 1),
-                            "Unknown escaped character in string '\\{}'",
-                            c
-                        );
+                        return Err(ParseError::UnknownStringEscape {
+                            c,
+                            span: Span::new(self.file_id, self.current_pos, self.current_pos + 1),
+                        });
                     }
                 }
                 self.bump(2);
@@ -400,10 +473,9 @@ impl<Chars: Iterator<Item = char>> Lexer<Chars> {
                 self.bump(1);
             }
             '\r' | '\n' | EOF => {
-                return perror_at!(
-                    Span::new(self.current_pos, self.current_pos + 1),
-                    "Reached end of line in string"
-                );
+                return Err(ParseError::EofInString {
+                    span: Span::new(self.file_id, self.current_pos, self.current_pos + 1),
+                });
             }
             c => {
                 ret = LexStringChar::Char(c);
@@ -416,7 +488,7 @@ impl<Chars: Iterator<Item = char>> Lexer<Chars> {
 
     /// Scans a numeric literal, consuming it and converting it to a token in
     /// the process.
-    fn scan_numeric_literal(&mut self) -> PResult<Token> {
+    fn scan_numeric_literal(&mut self) -> ParseResult<TokenType> {
         let mut string = String::new();
 
         if self.current_char == '-' || self.current_char == '+' {
@@ -460,26 +532,18 @@ impl<Chars: Iterator<Item = char>> Lexer<Chars> {
             }
 
             if !expect_number {
-                return perror!(
-                    "Expected a numerical value following the exponential: {}",
-                    string
-                );
+                return Err(ParseError::NoNumeralAfterExponential {
+                    span: Span::new(self.file_id, self.current_pos, self.current_pos + 1),
+                });
             }
         }
 
         debug!("Scanned Num `{}`", string);
-        match string.parse::<f64>() {
-            Ok(value) => Ok(Token::Num(value)),
-            Err(_) => perror_at!(
-                Span::new(self.current_pos, self.current_pos + 1),
-                "Could not read Num literal: `{}`",
-                string
-            ),
-        }
+        Ok(TokenType::Num(string))
     }
 
     // Scans an identifier, unless it matches a keyword.
-    fn scan_identifier_or_keyword(&mut self) -> PResult<Token> {
+    fn scan_identifier_or_keyword(&mut self) -> ParseResult<TokenType> {
         let mut string = String::new();
 
         string.push(self.current_char);
@@ -491,26 +555,20 @@ impl<Chars: Iterator<Item = char>> Lexer<Chars> {
         }
 
         let token = match string.as_str() {
-            "_" => Token::Underscore,
+            "_" => TokenType::Underscore,
 
-            "let" => Token::Let,
-            "when" => Token::When,
-            "operator" => Token::Operator,
-            "fn" => Token::Fn,
-            "type" => Token::Type,
+            "let" => TokenType::Let,
+            "when" => TokenType::When,
+            "operator" => TokenType::Operator,
+            "fn" => TokenType::Fn,
+            "struct" => TokenType::Struct,
 
-            "nothing" => Token::Nothing,
+            "nothing" => TokenType::Nothing,
 
             _ => match string.chars().nth(0).unwrap() {
-                'A'..='Z' => Token::TypeId(string),
-                'a'..='z' | '_' => Token::Id(string),
-                _ => {
-                    return perror_at!(
-                        Span::new(self.current_pos, self.current_pos + 1),
-                        "TODO: This should never happen, ever. `{}`",
-                        string
-                    );
-                }
+                'A'..='Z' => TokenType::TypeId(string),
+                'a'..='z' | '_' => TokenType::Id(string),
+                _ => unreachable!("ICE: non-identifier character found in identifier"),
             },
         };
 
@@ -518,12 +576,14 @@ impl<Chars: Iterator<Item = char>> Lexer<Chars> {
     }
 }
 
-impl<Chars: Iterator<Item = char>> Iterator for Lexer<Chars> {
-    type Item = PResult<SpanToken>;
+impl<'file> Iterator for Lexer<'file, '_> {
+    type Item = ParseResult<Token>;
 
     fn next(&mut self) -> Option<Self::Item> {
         match self.spanned_lex() {
-            Ok((_, Token::Eof, _)) => None,
+            Ok(Token {
+                ty: TokenType::Eof, ..
+            }) => None,
             t => Some(t),
         }
     }
@@ -564,5 +624,62 @@ fn is_operator_boundary(c: char) -> bool {
         ' ' | '\t' | '\r' | '\n' | EOF | '(' | ')' | '[' | ']' | '{' | '}' | '\\' | ',' | ';'
         | ':' | '"' => true,
         _ => false,
+    }
+}
+
+fn is_operator_start(c: char) -> bool {
+    match c {
+        '/'
+        | '='
+        | '-'
+        | '+'
+        | '!'
+        | '*'
+        | '%'
+        | '<'
+        | '>'
+        | '&'
+        | '|'
+        | '^'
+        | '~'
+        | '?'
+        | '$'
+        | '#'
+        | '@'
+        | '\u{00a1}'..='\u{00a7}'
+        | '\u{00a9}'
+        | '\u{00ab}'
+        | '\u{00ac}'
+        | '\u{00ae}'
+        | '\u{00b0}'..='\u{00b1}'
+        | '\u{00b6}'
+        | '\u{00bb}'
+        | '\u{00bf}'
+        | '\u{00d7}'
+        | '\u{00f7}'
+        | '\u{2016}'..='\u{2017}'
+        | '\u{2020}'..='\u{2027}'
+        | '\u{2030}'..='\u{203e}'
+        | '\u{2041}'..='\u{2053}'
+        | '\u{2055}'..='\u{205e}'
+        | '\u{2190}'..='\u{23ff}'
+        | '\u{2500}'..='\u{2775}'
+        | '\u{2794}'..='\u{2bff}'
+        | '\u{2e00}'..='\u{2e7f}'
+        | '\u{3001}'..='\u{3003}'
+        | '\u{3008}'..='\u{3020}'
+        | '\u{3030}' => true,
+        _ => false,
+    }
+}
+
+fn is_operator_cont(c: char) -> bool {
+    match c {
+        '\u{0300}'..='\u{036F}'
+        | '\u{1dc0}'..='\u{1dff}'
+        | '\u{20d0}'..='\u{20ff}'
+        | '\u{fe00}'..='\u{fe0f}'
+        | '\u{fe20}'..='\u{fe2f}' => true,
+        _ => is_operator_start(c),
     }
 }
