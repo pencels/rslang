@@ -1,6 +1,10 @@
-#![feature(str_strip)]
-#![feature(weak_into_raw)]
-#![feature(bindings_after_at)]
+//#![allow(incomplete_features)]
+//#![allow(stable_features)]
+//#![feature(str_strip)]
+//#![feature(weak_into_raw)]
+//#![feature(bindings_after_at)]
+//#![feature(or_patterns)]
+//#![feature(let_chains)]
 
 #[macro_use]
 extern crate lazy_static;

@@ -26,9 +26,8 @@ pub enum DefnKind {
         constraints: Vec<PrecConstraint>,
     },
     Struct {
-        name: String,
-        name_span: Span,
-        args: Vec<Spanned<String>>,
+        name: Token,
+        args: Vec<Token>,
     },
     Expr(Expr),
 }
@@ -56,7 +55,7 @@ pub enum ExprKind {
     Nothing,
     Num(String),
     Str(String),
-    Bool(bool),
+    InterpolatedStr(Vec<StringPart>),
     Atom(String),
     List(Vec<Expr>),
 
@@ -68,30 +67,48 @@ pub enum ExprKind {
     PrefixOp(Token, P<Expr>),
     PostfixOp(Token, P<Expr>),
     BinOp(Token, P<Expr>, P<Expr>),
+    Spread(Token),
     Call(P<Expr>, Vec<Expr>),
-    Sequence(Vec<Expr>),
+    Group(Vec<Expr>),
 
-    Fn(P<Expr>, Vec<Pattern>, P<Expr>),
+    Fn(String, Span, Vec<Pattern>, P<Expr>),
     Lambda(Vec<Pattern>, P<Expr>),
-    Matchbox(Vec<Expr>),
-    MatchboxRow(Vec<Pattern>, Option<P<Expr>>, P<Expr>),
+    Matchbox(Vec<MatchboxRow>),
+    Lazy(Vec<Expr>),
+}
+
+#[derive(Debug)]
+pub enum StringPart {
+    Str(Span, String),
+    Expr(Expr),
+}
+
+#[derive(Debug)]
+pub struct MatchboxRow {
+    pub span: Span,
+    pub params: Vec<Pattern>,
+    pub guard: Option<P<Expr>>,
+    pub result: P<Expr>,
 }
 
 #[derive(Debug)]
 pub struct Expr {
-    pub kind: ExprKind,
     pub span: Span,
+    pub kind: ExprKind,
 }
 
 #[derive(Debug)]
 pub enum PatternKind {
     Id(String),
     Ignore,
-    Literal(Token),
-    List(P<Pattern>),
-    Strict { id: Token, full: bool },
-    Type(String),
-    Constructor(String, Vec<Pattern>),
+    Str(String),
+    Num(String),
+    Nothing,
+    List(Vec<Pattern>),
+    Spread(Token),
+    Strict { inner: P<Pattern>, full: bool },
+    Type(Option<Token>, Token),
+    Constructor(Token, Vec<Pattern>),
 }
 
 #[derive(Debug)]

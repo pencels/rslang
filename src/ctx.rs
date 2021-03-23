@@ -5,7 +5,7 @@ use codespan_reporting::files::SimpleFiles;
 use crate::{
     lexer::{token::Token, OperatorTrie},
     parser::{
-        builtins::{self, BOTTOM_OP, POSTFIX_OP, PREFIX_OP, TOP_OP},
+        builtins::{self, BOTTOM_OP, CALL_OP, POSTFIX_OP, PREFIX_OP, TOP_OP},
         parselet::{PatternAction, PostfixAction, PrefixAction},
         prec::{Associativity, Poset},
     },
@@ -26,7 +26,10 @@ impl SlangContext {
 
         // Add in control operators.
         poset
-            .try_add_lt(BOTTOM_OP.clone(), PREFIX_OP.clone())
+            .try_add_lt(BOTTOM_OP.clone(), CALL_OP.clone())
+            .unwrap();
+        poset
+            .try_add_lt(CALL_OP.clone(), PREFIX_OP.clone())
             .unwrap();
         poset
             .try_add_lt(PREFIX_OP.clone(), POSTFIX_OP.clone())

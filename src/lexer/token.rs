@@ -43,8 +43,8 @@ pub enum TokenType {
     TypeId(String),
 
     Op(String),
-    UnknownOp(String),
     BottomOp,
+    CallOp,
     PrefixOp,
     PostfixOp,
     TopOp,
@@ -90,7 +90,6 @@ impl TokenType {
             TokenType::Id(_) => "`Id",
             TokenType::TypeId(_) => "`TypeId",
             TokenType::Op(op) => op,
-            TokenType::UnknownOp(op) => op,
             TokenType::InterpolateBegin(_) => "`InterpolateBegin",
             TokenType::InterpolateContinue(_) => "`InterpolateContinue",
             TokenType::InterpolateEnd(_) => "`InterpolateEnd",
@@ -119,6 +118,7 @@ impl TokenType {
             TokenType::PrefixOp => "`Prefix",
             TokenType::PostfixOp => "`Postfix",
             TokenType::TopOp => "`Top",
+            TokenType::CallOp => "`Call",
         }
     }
 }

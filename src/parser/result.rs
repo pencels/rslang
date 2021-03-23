@@ -8,10 +8,6 @@ pub type ParseResult<T> = Result<T, ParseError>;
 #[derive(IntoDiagnostic, Debug)]
 #[file_id = "FileId"]
 pub enum ParseError {
-    /// Indicates that parsing went wrong, but only because the input seems incomplete.
-    #[message = "Expected more tokens but reached end of file"]
-    Incomplete,
-
     /* Lexing Issues */
     #[message = "Encountered unknown character: {c:?}"]
     UnknownChar {
@@ -86,11 +82,22 @@ pub enum ParseError {
 
     #[message = "Operator was already declared as {was}, cannot add declaration for {now}"]
     RedeclaringOp {
-        #[primary = "Trying to redeclare this operator"]
+        #[primary = "Trying to redeclare the operator here"]
         span: Span,
         #[secondary = "Operator already declared here"]
         original_span: Span,
         was: &'static str,
         now: &'static str,
+    },
+
+    #[message = "Function definition expected at least {min} params or at most {max:?} params"]
+    InvalidNumberOfFnParams {
+        #[primary]
+        name_span: Span,
+        #[secondary = "{given} param(s) given"]
+        last_param_span: Span,
+        min: usize,
+        max: Option<usize>,
+        given: usize,
     },
 }

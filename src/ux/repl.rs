@@ -1,3 +1,9 @@
+use std::{
+    fs::File,
+    io::{self, Read},
+    path::Path,
+};
+
 use codespan_derive::IntoDiagnostic;
 use codespan_reporting::term::{
     self,
@@ -19,7 +25,7 @@ use crate::{
 const HISTORY_FILE: &str = ".slang_history";
 const PROMPT: &str = "~ ";
 
-fn handle_command(command: &str) {
+fn handle_command(command: &str, ctx: &mut SlangContext) {
     let command = &command[1..]; // Cut off the '.'
 
     // Split command and arg to command.
@@ -33,6 +39,10 @@ fn handle_command(command: &str) {
 
     match command_name {
         "lex" => print_tokens(arg),
+        "run" => match load(arg) {
+            Err(err) => eprintln!("{}", err),
+            _ => {}
+        },
         "help" => println!("Commands: .lex"),
         cmd => println!("Unrecognized command: `{}`", cmd),
     }
@@ -50,23 +60,20 @@ fn print_tokens(source: &str) {
     }
 }
 
-/*
-fn validate_parse(ctx: &mut SlangContext, source: &str) -> ValidationResult {
-    let lexer = Lexer::new(0, source, ctx.trie);
-    let mut parser = Parser::new(0, lexer, ctx.precedence);
-    let bump = Bump::new();
-    match parser.parse_next_defn(&bump) {
-        Err(ParseError::Incomplete) => ValidationResult::Incomplete,
-        Err(_) => ValidationResult::Valid(None),
-        Ok(_) => ValidationResult::Valid(None),
-    }
-}
- */
+fn load(filename: &str) -> io::Result<()> {
+    let mut ctx = SlangContext::new();
+    let path = Path::new(filename);
+    let mut file = File::open(path)?;
+    let mut buf = String::new();
 
-fn interpret(ctx: &mut SlangContext, source: &str, repl_index: &mut usize) {
-    let file_id = ctx
-        .files
-        .add(format!("<stdin-{}>", repl_index), source.to_owned());
+    file.read_to_string(&mut buf)?;
+    interpret(&mut ctx, &buf, filename);
+
+    Ok(())
+}
+
+fn interpret(ctx: &mut SlangContext, source: &str, filename: &str) {
+    let file_id = ctx.files.add(filename.to_owned(), source.to_owned());
     let lexer = Lexer::new(file_id, source, &mut ctx.trie);
     let mut parser = Parser::new(
         file_id,
@@ -121,9 +128,9 @@ fn eval_defn(parser: &mut Parser, defn: &Defn) -> ParseResult<()> {
 
 fn handle_line(ctx: &mut SlangContext, line: &str, repl_index: &mut usize) {
     if line.starts_with('.') {
-        handle_command(line)
+        handle_command(line, ctx);
     } else {
-        interpret(ctx, line, repl_index);
+        interpret(ctx, line, &format!("<stdin-{}>", repl_index));
         *repl_index += 1;
     }
 }

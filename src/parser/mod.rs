@@ -20,7 +20,7 @@ use self::{
     ast::{Defn, DefnKind, Expr, Pattern, PrecConstraint, PrecConstraintKind, Spanned},
     builtins::{
         expr::{BinOpParselet, PostfixOpParselet, PrefixOpParselet},
-        BOTTOM_OP, POSTFIX_OP, PREFIX_OP,
+        BOTTOM_OP, CALL_OP, POSTFIX_OP,
     },
     parselet::{PatternAction, PostfixAction, PrefixAction},
     prec::{Associativity, Fixity, Poset},
@@ -103,10 +103,8 @@ impl<'file, 'trie, 'prec> Parser<'file, 'trie, 'prec> {
                             Arc::new(BinOpParselet) as Arc<dyn PostfixAction>,
                         ),
                     );
-                    // Insert infix ops under prefix control operator.
-                    self.poset
-                        .try_add_lt(op.clone(), PREFIX_OP.clone())
-                        .unwrap();
+                    // Insert infix ops under call precedence.
+                    self.poset.try_add_lt(op.clone(), CALL_OP.clone()).unwrap();
                 }
                 Fixity::Postfix => {
                     if let Some((original, _)) = self.postfix_actions.get_key_value(op) {
@@ -203,6 +201,11 @@ impl<'file, 'trie, 'prec> Parser<'file, 'trie, 'prec> {
         Ok(self.peek()?.map(|tok| tok.ty))
     }
 
+    /// Peeks and compares the peeked token's type to the given type.
+    pub fn check(&mut self, ty: &TokenType) -> ParseResult<bool> {
+        Ok(self.peek()?.map(|tok| tok.ty == *ty).unwrap_or(false))
+    }
+
     /// Peek the next token's type, erroring out if at EOF.
     pub fn peek_expect_ty(&mut self) -> ParseResult<TokenType> {
         Ok(self.peek_expect()?.ty)
@@ -239,15 +242,98 @@ impl<'file, 'trie, 'prec> Parser<'file, 'trie, 'prec> {
         }
     }
 
+    pub fn eat_expect_id(&mut self) -> ParseResult<Token> {
+        let tok = self.eat()?;
+        match tok.ty {
+            TokenType::Id(_) => Ok(tok),
+            _ => Err(ParseError::Expected {
+                span: tok.span,
+                expected: "identifier".to_string(),
+                got: tok,
+            }),
+        }
+    }
+
+    pub fn eat_expect_type_id(&mut self) -> ParseResult<Token> {
+        let tok = self.eat()?;
+        match tok.ty {
+            TokenType::TypeId(_) => Ok(tok),
+            _ => Err(ParseError::Expected {
+                span: tok.span,
+                expected: "type identifier".to_string(),
+                got: tok,
+            }),
+        }
+    }
+
+    pub fn eat_expect_atom(&mut self) -> ParseResult<Token> {
+        let tok = self.eat()?;
+        match tok.ty {
+            TokenType::Atom(_) => Ok(tok),
+            _ => Err(ParseError::Expected {
+                span: tok.span,
+                expected: "atom".to_string(),
+                got: tok,
+            }),
+        }
+    }
+
+    pub fn eat_expect_num(&mut self) -> ParseResult<Token> {
+        let tok = self.eat()?;
+        match tok.ty {
+            TokenType::Num(_) => Ok(tok),
+            _ => Err(ParseError::Expected {
+                span: tok.span,
+                expected: "number".to_string(),
+                got: tok,
+            }),
+        }
+    }
+
+    /// Parses the tail of a delimited expression which may have newlines in place of the delimiters.
+    /// e.g. 1, 2, 3]
+    pub fn parse_delimited<T, F>(
+        &mut self,
+        elem: F,
+        delim: TokenType,
+        end: TokenType,
+    ) -> ParseResult<(Vec<T>, Token)>
+    where
+        F: Fn(&mut Parser) -> ParseResult<T>,
+    {
+        let mut inners = Vec::new();
+
+        while !self.check(&end)? {
+            self.skip_newlines()?;
+            if !self.check(&end)? {
+                inners.push(elem(self)?);
+            }
+            let tok = self.peek_expect()?;
+            if tok.ty == end {
+                continue;
+            } else if tok.ty == delim || tok.ty == TokenType::Newline {
+                self.eat()?;
+            } else {
+                return Err(ParseError::Expected {
+                    span: tok.span,
+                    expected: format!("{:?} or {:?}", delim, end),
+                    got: tok,
+                });
+            }
+        }
+
+        Ok((inners, self.eat()?))
+    }
+
     /// Skips past newlines. Use for contexts where zero or more newlines can be inserted between tokens.
-    fn skip_newlines(&mut self) -> ParseResult<()> {
+    pub fn skip_newlines(&mut self) -> ParseResult<()> {
         loop {
             match self.peek_ty()? {
                 Some(TokenType::Newline) => {
                     self.eat()?;
                 }
                 Some(_) => break,
-                None => return Err(ParseError::Incomplete),
+                None => break,
             }
         }
 
@@ -292,18 +378,42 @@ impl<'file, 'trie, 'prec> Parser<'file, 'trie, 'prec> {
         }
     }
 
+    pub fn peek_cmp_precedence(&mut self, op: &Token) -> ParseResult<Option<Ordering>> {
+        if let Some(peeked_op) = self.peek()? {
+            Ok(self.poset.cmp(&peeked_op, op))
+        } else {
+            Ok(None)
+        }
+    }
+
     fn maybe_peek_expr_continue(
         &mut self,
         op: &Token,
     ) -> ParseResult<Option<Arc<dyn PostfixAction>>> {
         if let Some(peeked_op) = self.peek()? {
-            let (assoc, action) =
-                self.postfix_actions
-                    .get(&peeked_op)
-                    .ok_or_else(|| ParseError::UnknownOp {
-                        span: peeked_op.span,
-                        op: peeked_op.ty.repr().to_string(),
-                    })?;
+            if let TokenType::Op(ref op) = peeked_op.ty {
+                if !self.lexer.has_operator(op) {
+                    if let TokenType::Op(op) = peeked_op.ty {
+                        return Err(ParseError::UnknownOp {
+                            span: peeked_op.span,
+                            op,
+                        });
+                    }
+                }
+            }
+
+            let (assoc, action) = if let Some(v) = self.postfix_actions.get(&peeked_op) {
+                v
+            } else {
+                // If no action for the token, then bail.
+                return Ok(None);
+            };
+
+            // If not an actual operator, then do not do precedence comparisons.
+            match peeked_op.ty {
+                TokenType::Op(_) => {}
+                _ => return Ok(Some(action.clone())),
+            }
 
             match self.poset.cmp(&peeked_op, op) {
                 Some(Ordering::Greater) => Ok(Some(action.clone())),
@@ -493,7 +603,27 @@ impl<'file, 'trie, 'prec> Parser<'file, 'trie, 'prec> {
     }
 
     fn parse_struct_defn(&mut self) -> ParseResult<Defn> {
-        todo!()
+        let kw = self.eat_expect(TokenType::Struct)?;
+
+        let name = self.eat_expect_type_id()?;
+        let mut args = Vec::new();
+        loop {
+            match self.peek_ty()? {
+                Some(TokenType::Id(_)) => args.push(self.eat()?),
+                _ => break,
+            }
+        }
+
+        let span = if let Some(arg) = args.last() {
+            kw.span.unite(arg.span)
+        } else {
+            kw.span
+        };
+
+        Ok(Defn {
+            span,
+            kind: DefnKind::Struct { name, args },
+        })
     }
 
     fn parse_expression_defn(&mut self) -> ParseResult<Defn> {
@@ -505,6 +635,7 @@ impl<'file, 'trie, 'prec> Parser<'file, 'trie, 'prec> {
     }
 
     pub fn parse_next_defn(&mut self) -> ParseResult<Option<Defn>> {
+        self.skip_newlines()?;
         Ok(match self.peek_ty()? {
             Some(ty) => Some(match ty {
                 TokenType::Operator => self.parse_operator_defn()?,

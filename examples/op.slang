@@ -8,3 +8,5 @@ operator infix left ~ with +
 
 operator prefix !
 operator postfix !
+
+operator postfix ~

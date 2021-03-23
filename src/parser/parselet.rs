@@ -26,6 +26,12 @@ pub trait PatternAction: Send + Sync + 'static {
         parser: &mut Parser<'file, 'trie, 'prec>,
     ) -> ParseResult<Pattern>;
 }
+pub trait DefnAction: Send + Sync + 'static {
+    fn parse<'file, 'trie, 'prec>(
+        &self,
+        parser: &mut Parser<'file, 'trie, 'prec>,
+    ) -> ParseResult<Defn>;
+}
 
 /*
 pub trait TyAction: Send + Sync + 'static {

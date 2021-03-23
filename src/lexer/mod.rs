@@ -74,6 +74,11 @@ impl<'file, 'trie> Lexer<'file, 'trie> {
         self.operator_trie.insert_operator(operator);
     }
 
+    /// Checks whether the lexer has inserted the operator into the trie.
+    pub fn has_operator(&self, operator: &str) -> bool {
+        self.operator_trie.contains(operator)
+    }
+
     /// Tells the lexer whether it should use its operator trie or not.
     pub fn should_use_trie(&mut self, should: bool) {
         self.use_trie = should;
@@ -341,13 +346,7 @@ impl<'file, 'trie> Lexer<'file, 'trie> {
 
                 Ok(TokenType::Op(operator))
             }
-            _ => {
-                if let TokenType::Op(operator) = self.scan_arbitrary_operator(operator) {
-                    Ok(TokenType::UnknownOp(operator))
-                } else {
-                    unreachable!("ICE: scan_arbitrary_operator returned not an operator token");
-                }
-            }
+            _ => Ok(self.scan_arbitrary_operator(operator)),
         }
     }
 
