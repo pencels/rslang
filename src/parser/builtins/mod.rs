@@ -1,39 +1,41 @@
 use std::{collections::HashMap, sync::Arc};
 
-use super::parselet::{PatternAction, PostfixAction, PrefixAction};
-use crate::lexer::token::{Token, TokenType};
+use super::parselet::{PostfixAction, PostfixPatternAction, PrefixAction, PrefixPatternAction};
+use crate::ctx::{PostfixActionTable, PrefixActionTable};
+use crate::lexer::token::TokenKind;
 use crate::parser::prec::Associativity;
 
 pub mod expr;
 pub mod pattern;
 
 lazy_static! {
-    static ref CALL_ACTION: Arc<dyn PostfixAction> = Arc::new(expr::CallParselet);
+    static ref CALL_ACTION: Arc<dyn PostfixAction> = Arc::new(CallParselet);
+    static ref CALL_PATTERN_ACTION: Arc<dyn PostfixPatternAction> = Arc::new(CallParselet);
 }
 
 macro_rules! builtin_prefix_actions {
     ($(($name:expr, $prefix:expr $(,$postfix:expr)?$(,)?)),*) => {
         lazy_static! {
-            pub static ref BUILTIN_PREFIX_ACTIONS: HashMap<Token, Arc<dyn PrefixAction>> = {
+            pub static ref BUILTIN_PREFIX_ACTIONS: PrefixActionTable<dyn PrefixAction> = {
                 let mut h = hashmap!{};
                 $({
-                    let tok = Token::new_dummy($name);
+                    let ty = $name;
                     let act = Arc::new($prefix);
-                    assert!(!h.contains_key(&tok));
-                    h.insert(tok, act as Arc<dyn PrefixAction>);
+                    assert!(!h.contains_key(&ty));
+                    h.insert(ty, (None, act as Arc<dyn PrefixAction>));
                 })*
                 h
             };
 
-            pub static ref BUILTIN_POSTFIX_ACTIONS_FROM_PREFIX: HashMap<Token, (Option<Associativity>, Arc<dyn PostfixAction>)> = {
+            pub static ref BUILTIN_POSTFIX_ACTIONS_FROM_PREFIX: PostfixActionTable<dyn PostfixAction> = {
                 let mut h = hashmap!{};
                 $({
-                    let tok = Token::new_dummy($name);
+                    let ty = $name;
                     #[allow(unused_mut)]
                     let mut act = CALL_ACTION.clone();
                     $(act = Arc::new($postfix) as Arc<dyn PostfixAction>;)*
-                    assert!(!h.contains_key(&tok));
-                    h.insert(tok, (None, act));
+                    assert!(!h.contains_key(&ty));
+                    h.insert(ty, (None, Some(Associativity::Left), act));
                 })*
                 h
             };
@@ -47,13 +49,13 @@ macro_rules! builtin_prefix_actions {
 macro_rules! builtin_postfix_actions {
     ($(($name:expr, $assoc:expr, $postfix:expr $(,)?)),*) => {
         lazy_static! {
-            pub static ref BUILTIN_POSTFIX_ACTIONS: HashMap<Token, (Option<Associativity>, Arc<dyn PostfixAction>)> = {
+            pub static ref BUILTIN_POSTFIX_ACTIONS: PostfixActionTable<dyn PostfixAction> = {
                 let mut h = BUILTIN_POSTFIX_ACTIONS_FROM_PREFIX.clone();
                 $({
-                    let tok = Token::new_dummy($name);
+                    let ty = $name;
                     let act = Arc::new($postfix);
-                    assert!(!h.contains_key(&tok));
-                    h.insert(tok, ($assoc, act as Arc<dyn PostfixAction>));
+                    assert!(!h.contains_key(&ty));
+                    h.insert(ty, (None, $assoc, act as Arc<dyn PostfixAction>));
                 })*
                 h
             };
@@ -64,23 +66,56 @@ macro_rules! builtin_postfix_actions {
     };
 }
 
-macro_rules! builtin_pattern_actions {
-    ($(($name:expr, $pattern:expr $(,)?)),*) => {
+macro_rules! builtin_prefix_pattern_actions {
+    ($(($name:expr, $prefix:expr $(,$postfix:expr)?$(,)?)),*) => {
         lazy_static! {
-            pub static ref BUILTIN_PATTERN_ACTIONS: HashMap<Token, Arc<dyn PatternAction>> = {
+            pub static ref BUILTIN_PREFIX_PATTERN_ACTIONS: PrefixActionTable<dyn PrefixPatternAction> = {
                 let mut h = hashmap!{};
                 $({
-                    let tok = Token::new_dummy($name);
-                    let act = Arc::new($pattern);
-                    assert!(!h.contains_key(&tok));
-                    h.insert(tok, act as Arc<dyn PatternAction>);
+                    let ty = $name;
+                    let act = Arc::new($prefix);
+                    assert!(!h.contains_key(&ty));
+                    h.insert(ty, (None, act as Arc<dyn PrefixPatternAction>));
+                })*
+                h
+            };
+
+            pub static ref BUILTIN_POSTFIX_PATTERN_ACTIONS_FROM_PREFIX: PostfixActionTable<dyn PostfixPatternAction> = {
+                let mut h = hashmap!{};
+                $({
+                    let ty = $name;
+                    #[allow(unused_mut)]
+                    let mut act = CALL_PATTERN_ACTION.clone();
+                    $(act = Arc::new($postfix) as Arc<dyn PostfixPatternAction>;)*
+                    assert!(!h.contains_key(&ty));
+                    h.insert(ty, (None, None, act));
                 })*
                 h
             };
         }
     };
-    ($(($name:expr, $pattern:expr $(,)?),)*) => {
-        builtin_pattern_actions! { $(($name, $pattern)),* }
+    ($(($name:expr, $prefix:path $(,$postfix:expr)?$(,)?),)*) => {
+        builtin_prefix_pattern_actions! { $(($name, $prefix $(, $postfix)?)),* }
+    };
+}
+
+macro_rules! builtin_postfix_pattern_actions {
+    ($(($name:expr, $assoc:expr, $postfix:expr $(,)?)),*) => {
+        lazy_static! {
+            pub static ref BUILTIN_POSTFIX_PATTERN_ACTIONS: PostfixActionTable<dyn PostfixPatternAction> = {
+                let mut h = BUILTIN_POSTFIX_PATTERN_ACTIONS_FROM_PREFIX.clone();
+                $({
+                    let ty = $name;
+                    let act = Arc::new($postfix);
+                    assert!(!h.contains_key(&ty));
+                    h.insert(ty, (None, $assoc, act as Arc<dyn PostfixPatternAction>));
+                })*
+                h
+            };
+        }
+    };
+    ($(($name:expr, $assoc:expr, $postfix:expr $(,)?),)*) => {
+        builtin_postfix_pattern_actions! { $(($name, $assoc, $postfix)),* }
     };
 }
 
@@ -91,45 +126,43 @@ pub struct StrParselet;
 pub struct ListParselet;
 pub struct GroupParselet;
 pub struct IdParselet;
+pub struct TypeIdParselet;
 pub struct SpreadParselet;
+pub struct CallParselet;
 
 builtin_prefix_actions! {
-    (TokenType::Nothing, NothingParselet),
-    (TokenType::Num("".to_string()), NumParselet),
-    (TokenType::Atom("".to_string()), AtomParselet),
-    (TokenType::Str("".to_string()), StrParselet),
-    (TokenType::InterpolateBegin("".to_string()), expr::InterpolatedStrParselet),
-    (TokenType::LSquare, ListParselet),
-    (TokenType::LParen, GroupParselet),
-    (TokenType::LCurly, expr::BlockParselet),
-    (TokenType::Id("".to_string()), IdParselet),
-    (TokenType::Let, expr::LetParselet),
-    (TokenType::Fn, expr::FnParselet),
-    (TokenType::Backslash, expr::LambdaParselet),
-    (TokenType::Ellipsis, SpreadParselet),
+    (TokenKind::Nothing, NothingParselet),
+    (TokenKind::Num, NumParselet),
+    (TokenKind::Atom, AtomParselet),
+    (TokenKind::Str, StrParselet),
+    (TokenKind::InterpolateBegin, expr::InterpolatedStrParselet),
+    (TokenKind::LSquare, ListParselet),
+    (TokenKind::LParen, GroupParselet),
+    (TokenKind::LCurly, expr::BlockParselet),
+    (TokenKind::Id, IdParselet),
+    (TokenKind::TypeId, TypeIdParselet),
+    (TokenKind::Let, expr::LetParselet),
+    (TokenKind::Fn, expr::FnParselet),
+    (TokenKind::Backslash, expr::LambdaParselet),
+    (TokenKind::Ellipsis, SpreadParselet),
 }
 
 builtin_postfix_actions! {
-    (TokenType::Eq, Some(Associativity::Right), expr::EqParselet),
+    (TokenKind::Eq, Some(Associativity::Right), expr::EqParselet),
 }
 
-builtin_pattern_actions! {
-    (TokenType::Id("".to_string()), IdParselet),
-    (TokenType::Underscore, pattern::IgnoreParselet),
-    (TokenType::Nothing, NothingParselet),
-    (TokenType::Num("".to_string()), NumParselet),
-    (TokenType::Str("".to_string()), StrParselet),
-    (TokenType::LSquare, ListParselet),
-    (TokenType::LCurly, pattern::StrictParselet),
-    (TokenType::LParen, GroupParselet),
-    (TokenType::Ellipsis, SpreadParselet),
-    (TokenType::ColonColon, pattern::TypeParselet),
+builtin_prefix_pattern_actions! {
+    (TokenKind::Id, IdParselet),
+    (TokenKind::TypeId, TypeIdParselet),
+    (TokenKind::Underscore, pattern::IgnoreParselet),
+    (TokenKind::Nothing, NothingParselet),
+    (TokenKind::Num, NumParselet),
+    (TokenKind::Str, StrParselet),
+    (TokenKind::LSquare, ListParselet),
+    (TokenKind::LCurly, pattern::StrictParselet),
+    (TokenKind::LParen, GroupParselet),
+    (TokenKind::Ellipsis, SpreadParselet),
+    (TokenKind::ColonColon, pattern::TypeParselet),
 }
 
-lazy_static! {
-    pub static ref TOP_OP: Token = Token::new_dummy(TokenType::TopOp);
-    pub static ref PREFIX_OP: Token = Token::new_dummy(TokenType::PrefixOp);
-    pub static ref POSTFIX_OP: Token = Token::new_dummy(TokenType::PostfixOp);
-    pub static ref CALL_OP: Token = Token::new_dummy(TokenType::CallOp);
-    pub static ref BOTTOM_OP: Token = Token::new_dummy(TokenType::BottomOp);
-}
+builtin_postfix_pattern_actions! {}

@@ -92,11 +92,11 @@ impl<'file, 'trie> Lexer<'file, 'trie> {
         self.discard_whitespace_or_comments()?;
 
         self.start_pos = self.current_pos;
-        let t = self.lex()?;
+        let ty = self.lex()?;
 
         Ok(Token::new(
             Span::new(self.file_id, self.start_pos, self.current_pos),
-            t,
+            ty,
         ))
     }
 

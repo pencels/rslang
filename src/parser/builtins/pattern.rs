@@ -1,58 +1,85 @@
-use std::sync::Arc;
+use std::{cmp::Ordering, sync::Arc};
 
 use crate::{
     lexer::token::TokenType,
     parser::{
         ast::{Pattern, PatternKind},
-        parselet::PatternAction,
-        result::ParseResult,
+        parselet::{PostfixPatternAction, PrefixPatternAction},
+        prec::PrecLevel,
+        result::{ParseError, ParseResult},
     },
+    util::P,
 };
 
 use super::{
-    GroupParselet, IdParselet, ListParselet, NothingParselet, NumParselet, SpreadParselet,
-    StrParselet,
+    CallParselet, GroupParselet, IdParselet, ListParselet, NothingParselet, NumParselet,
+    SpreadParselet, StrParselet, TypeIdParselet,
 };
 
-impl PatternAction for IdParselet {
+impl PrefixPatternAction for IdParselet {
     fn parse<'file, 'trie, 'prec>(
         &self,
         parser: &mut crate::parser::Parser<'file, 'trie, 'prec>,
+        enclosed: bool,
     ) -> ParseResult<Pattern> {
-        let tok = parser.eat()?; // Blindly eat the identifier
-
         let id = parser.eat_expect_id()?;
 
         match parser.peek_expect_ty()? {
             TokenType::ColonColon => {
                 let col = parser.eat()?;
-                let ty = parser.eat_expect_type_id()?;
-                return Ok(Pattern {
-                    span: col.span.unite(ty.span),
-                    kind: PatternKind::Type(Some(id), ty),
-                });
+                if enclosed {
+                    let ty = parser.eat_expect_type_id()?;
+                    return Ok(Pattern {
+                        span: id.span.unite(ty.span),
+                        kind: PatternKind::Type(Some(id), ty),
+                    });
+                } else {
+                    return Err(ParseError::AmbiguousUnenclosedPattern { span: col.span });
+                }
             }
             _ => {}
         }
 
-        let id = if let TokenType::Id(id) = id.ty {
-            id
+        let (id, id_span) = if let TokenType::Id(s) = id.ty {
+            (s, id.span)
         } else {
             unreachable!("ICE: IdParselet not called with Id token")
         };
 
         Ok(Pattern {
-            span: tok.span,
+            span: id_span,
             kind: PatternKind::Id(id),
         })
     }
 }
 
-pub struct TypeParselet;
-impl PatternAction for TypeParselet {
+impl PrefixPatternAction for TypeIdParselet {
     fn parse<'file, 'trie, 'prec>(
         &self,
         parser: &mut crate::parser::Parser<'file, 'trie, 'prec>,
+        _enclosed: bool,
+    ) -> ParseResult<Pattern> {
+        let id = parser.eat_expect_type_id()?;
+
+        let s = if let TokenType::TypeId(s) = id.ty {
+            s
+        } else {
+            unreachable!("ICE: TypeIdParselet not called with TypeId token");
+        };
+
+        Ok(Pattern {
+            span: id.span,
+            kind: PatternKind::TypeId(s),
+        })
+    }
+}
+
+pub struct TypeParselet;
+impl PrefixPatternAction for TypeParselet {
+    fn parse<'file, 'trie, 'prec>(
+        &self,
+        parser: &mut crate::parser::Parser<'file, 'trie, 'prec>,
+        _enclosed: bool,
     ) -> ParseResult<Pattern> {
         let tok = parser.eat()?;
         let ty = parser.eat_expect_type_id()?;
@@ -64,24 +91,42 @@ impl PatternAction for TypeParselet {
 }
 
 pub struct IgnoreParselet;
-impl PatternAction for IgnoreParselet {
+impl PrefixPatternAction for IgnoreParselet {
     fn parse<'file, 'trie, 'prec>(
         &self,
         parser: &mut crate::parser::Parser<'file, 'trie, 'prec>,
+        enclosed: bool,
     ) -> ParseResult<Pattern> {
-        let tok = parser.eat()?; // Eat the underscore
+        let id = parser.eat()?; // Eat the underscore
+
+        match parser.peek_expect_ty()? {
+            TokenType::ColonColon => {
+                let col = parser.eat()?;
+                if enclosed {
+                    let ty = parser.eat_expect_type_id()?;
+                    return Ok(Pattern {
+                        span: id.span.unite(ty.span),
+                        kind: PatternKind::Type(None, ty),
+                    });
+                } else {
+                    return Err(ParseError::AmbiguousUnenclosedPattern { span: col.span });
+                }
+            }
+            _ => {}
+        }
 
         Ok(Pattern {
-            span: tok.span,
+            span: id.span,
             kind: PatternKind::Ignore,
         })
     }
 }
 
-impl PatternAction for NothingParselet {
+impl PrefixPatternAction for NothingParselet {
     fn parse<'file, 'trie, 'prec>(
         &self,
         parser: &mut crate::parser::Parser<'file, 'trie, 'prec>,
+        _enclosed: bool,
     ) -> ParseResult<Pattern> {
         let tok = parser.eat()?;
         Ok(Pattern {
@@ -91,10 +136,11 @@ impl PatternAction for NothingParselet {
     }
 }
 
-impl PatternAction for StrParselet {
+impl PrefixPatternAction for StrParselet {
     fn parse<'file, 'trie, 'prec>(
         &self,
         parser: &mut crate::parser::Parser<'file, 'trie, 'prec>,
+        _enclosed: bool,
     ) -> ParseResult<Pattern> {
         let tok = parser.eat()?;
 
@@ -111,10 +157,11 @@ impl PatternAction for StrParselet {
     }
 }
 
-impl PatternAction for NumParselet {
+impl PrefixPatternAction for NumParselet {
     fn parse<'file, 'trie, 'prec>(
         &self,
         parser: &mut crate::parser::Parser<'file, 'trie, 'prec>,
+        _enclosed: bool,
     ) -> ParseResult<Pattern> {
         let tok = parser.eat()?;
 
@@ -131,15 +178,16 @@ impl PatternAction for NumParselet {
     }
 }
 
-impl PatternAction for ListParselet {
+impl PrefixPatternAction for ListParselet {
     fn parse<'file, 'trie, 'prec>(
         &self,
         parser: &mut crate::parser::Parser<'file, 'trie, 'prec>,
+        _enclosed: bool,
     ) -> ParseResult<Pattern> {
         let lsq = parser.eat()?; // Eat the [
 
         let (pats, end) = parser.parse_delimited(
-            |parser| parser.parse_pattern(),
+            |parser| parser.parse_pattern(true),
             TokenType::Comma,
             TokenType::RSquare,
         )?;
@@ -151,10 +199,11 @@ impl PatternAction for ListParselet {
     }
 }
 
-impl PatternAction for SpreadParselet {
+impl PrefixPatternAction for SpreadParselet {
     fn parse<'file, 'trie, 'prec>(
         &self,
         parser: &mut crate::parser::Parser<'file, 'trie, 'prec>,
+        _enclosed: bool,
     ) -> ParseResult<Pattern> {
         let ellipsis = parser.eat()?;
         let id = parser.eat_expect_id()?;
@@ -165,23 +214,25 @@ impl PatternAction for SpreadParselet {
     }
 }
 
-impl PatternAction for GroupParselet {
+impl PrefixPatternAction for GroupParselet {
     fn parse<'file, 'trie, 'prec>(
         &self,
         parser: &mut crate::parser::Parser<'file, 'trie, 'prec>,
+        _enclosed: bool,
     ) -> ParseResult<Pattern> {
         parser.eat()?; // Eat the (
-        let inner = parser.parse_pattern()?;
+        let inner = parser.parse_pattern(true)?;
         parser.eat_expect(TokenType::RParen)?;
         Ok(inner)
     }
 }
 
 pub struct StrictParselet;
-impl PatternAction for StrictParselet {
+impl PrefixPatternAction for StrictParselet {
     fn parse<'file, 'trie, 'prec>(
         &self,
         parser: &mut crate::parser::Parser<'file, 'trie, 'prec>,
+        _enclosed: bool,
     ) -> ParseResult<Pattern> {
         let lcurly = parser.eat()?; // Eat the {
 
@@ -193,7 +244,7 @@ impl PatternAction for StrictParselet {
             _ => false,
         };
 
-        let inner = parser.parse_pattern()?;
+        let inner = parser.parse_pattern(true)?;
         let rcurly = parser.eat_expect(TokenType::RCurly)?;
 
         Ok(Pattern {
@@ -206,12 +257,33 @@ impl PatternAction for StrictParselet {
     }
 }
 
-pub struct ConstructorParselet;
-impl PatternAction for ConstructorParselet {
+impl PostfixPatternAction for CallParselet {
     fn parse<'file, 'trie, 'prec>(
         &self,
         parser: &mut crate::parser::Parser<'file, 'trie, 'prec>,
+        lhs: P<Pattern>,
+        _enclosed: bool,
     ) -> ParseResult<Pattern> {
-        todo!()
+        let mut args = Vec::new();
+
+        loop {
+            args.push(parser.parse_pattern(false)?);
+            println!("{:?}", parser.peek_ty()?);
+            match parser.peek_cmp_precedence(&PrecLevel::Call)? {
+                Some(Ordering::Greater) | Some(Ordering::Equal) => {}
+                _ => break,
+            }
+        }
+
+        let span = if let Some(arg) = args.last() {
+            lhs.span.unite(arg.span)
+        } else {
+            lhs.span
+        };
+
+        Ok(Pattern {
+            span,
+            kind: PatternKind::Constructor(lhs, args),
+        })
     }
 }

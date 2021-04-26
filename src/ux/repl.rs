@@ -81,7 +81,8 @@ fn interpret(ctx: &mut SlangContext, source: &str, filename: &str) {
         &mut ctx.poset,
         &mut ctx.prefix_actions,
         &mut ctx.postfix_actions,
-        &mut ctx.pattern_actions,
+        &mut ctx.prefix_pattern_actions,
+        &mut ctx.postfix_pattern_actions,
     );
 
     loop {

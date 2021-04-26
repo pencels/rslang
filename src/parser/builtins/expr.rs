@@ -1,10 +1,11 @@
 use std::{cmp::Ordering, sync::Arc};
 
 use crate::{
-    lexer::token::TokenType,
+    lexer::token::{Token, TokenType},
     parser::{
         ast::{Expr, ExprKind, MatchboxRow, Pattern, PatternKind, StringPart},
         parselet::{PostfixAction, PrefixAction},
+        prec::PrecLevel,
         result::{ParseError, ParseResult},
         Parser,
     },
@@ -12,8 +13,8 @@ use crate::{
 };
 
 use super::{
-    AtomParselet, GroupParselet, IdParselet, ListParselet, NothingParselet, NumParselet,
-    SpreadParselet, StrParselet, CALL_OP, PREFIX_OP,
+    AtomParselet, CallParselet, GroupParselet, IdParselet, ListParselet, NothingParselet,
+    NumParselet, SpreadParselet, StrParselet, TypeIdParselet,
 };
 
 impl PrefixAction for NothingParselet {
@@ -179,7 +180,6 @@ impl PrefixAction for IdParselet {
     }
 }
 
-pub struct TypeIdParselet;
 impl PrefixAction for TypeIdParselet {
     fn parse<'file, 'trie, 'prec>(
         &self,
@@ -205,7 +205,7 @@ impl PrefixAction for LetParselet {
     ) -> ParseResult<Expr> {
         parser.eat_expect(TokenType::Let)?;
 
-        let pat = parser.parse_pattern()?;
+        let pat = parser.parse_pattern(true)?;
         parser.eat_expect(TokenType::Eq)?;
         parser.skip_newlines()?; // Allow newlines after '='.
         let expr = parser.parse_expression()?;
@@ -242,7 +242,7 @@ impl PrefixAction for PrefixOpParselet {
         parser: &mut Parser<'file, 'trie, 'prec>,
     ) -> ParseResult<Expr> {
         let tok = parser.eat()?; // Blindly eat the operator
-        let expr = parser.parse_expr(&PREFIX_OP)?;
+        let expr = parser.parse_expr(&PrecLevel::Prefix)?;
 
         Ok(Expr {
             span: tok.span.unite(expr.span),
@@ -259,7 +259,7 @@ impl PostfixAction for BinOpParselet {
         lhs: P<Expr>,
     ) -> ParseResult<Expr> {
         let tok = parser.eat()?; // Blindly eat the operator
-        let rhs = parser.parse_expr(&tok)?;
+        let rhs = parser.parse_expr(&tok.ty.prec())?;
 
         Ok(Expr {
             span: lhs.span.unite(rhs.span),
@@ -283,7 +283,6 @@ impl PostfixAction for PostfixOpParselet {
     }
 }
 
-pub struct CallParselet;
 impl PostfixAction for CallParselet {
     fn parse<'file, 'trie, 'prec>(
         &self,
@@ -291,9 +290,10 @@ impl PostfixAction for CallParselet {
         lhs: P<Expr>,
     ) -> ParseResult<Expr> {
         let mut args = Vec::new();
+
         loop {
-            args.push(parser.parse_expr(&CALL_OP)?);
-            match parser.peek_cmp_precedence(&CALL_OP)? {
+            args.push(parser.parse_expr(&PrecLevel::Call)?);
+            match parser.peek_cmp_precedence(&PrecLevel::Call)? {
                 Some(Ordering::Greater) | Some(Ordering::Equal) => {}
                 _ => break,
             }
@@ -337,7 +337,7 @@ pub struct FnParselet;
 impl FnParselet {
     fn parse_parenthesized_param(&self, parser: &mut Parser) -> ParseResult<Pattern> {
         parser.eat()?;
-        let param = parser.parse_pattern()?;
+        let param = parser.parse_pattern(true)?;
         parser.eat_expect(TokenType::RParen)?;
         Ok(param)
     }
@@ -345,7 +345,7 @@ impl FnParselet {
     fn parse_param(&self, parser: &mut Parser) -> ParseResult<Pattern> {
         match parser.peek_ty()? {
             Some(TokenType::LParen) => self.parse_parenthesized_param(parser),
-            _ => parser.parse_pattern(),
+            _ => parser.parse_pattern(false),
         }
     }
 }
@@ -464,14 +464,14 @@ impl PrefixAction for LambdaParselet {
         let tok = parser.eat()?; // Eat the '\'
 
         let mut params = Vec::new();
-        params.push(parser.parse_pattern()?);
+        params.push(parser.parse_pattern(false)?);
 
         loop {
             parser.skip_newlines()?;
             if parser.check(&TokenType::Arrow)? {
                 break;
             }
-            params.push(parser.parse_pattern()?);
+            params.push(parser.parse_pattern(false)?);
         }
         parser.eat()?;
         parser.skip_newlines()?;
@@ -498,7 +498,7 @@ impl BlockParselet {
                 TokenType::Op(ref op) if op == "|" => break,
                 _ => {}
             }
-            params.push(parser.parse_pattern()?);
+            params.push(parser.parse_pattern(false)?);
         }
 
         let sep = parser.eat()?;

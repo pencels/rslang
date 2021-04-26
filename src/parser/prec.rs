@@ -6,6 +6,15 @@ use std::{
     hash::Hash,
 };
 
+#[derive(Debug, PartialEq, Eq, Hash)]
+pub enum PrecLevel {
+    Prefix,
+    Postfix,
+    Infix(String),
+    Call,
+    Bottom,
+}
+
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub enum Fixity {
     Prefix,

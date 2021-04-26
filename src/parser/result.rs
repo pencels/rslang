@@ -6,7 +6,7 @@ use crate::{
 pub type ParseResult<T> = Result<T, ParseError>;
 
 #[derive(IntoDiagnostic, Debug)]
-#[file_id = "FileId"]
+#[file_id(FileId)]
 pub enum ParseError {
     /* Lexing Issues */
     #[message = "Encountered unknown character: {c:?}"]
@@ -99,5 +99,11 @@ pub enum ParseError {
         min: usize,
         max: Option<usize>,
         given: usize,
+    },
+
+    #[message = "Token could lead to ambiguity in unenclosed pattern, please add parentheses"]
+    AmbiguousUnenclosedPattern {
+        #[primary]
+        span: Span,
     },
 }

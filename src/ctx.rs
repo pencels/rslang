@@ -3,20 +3,25 @@ use std::{collections::HashMap, sync::Arc};
 use codespan_reporting::files::SimpleFiles;
 
 use crate::{
-    lexer::{token::Token, OperatorTrie},
+    lexer::{token::TokenKind, OperatorTrie},
     parser::{
-        builtins::{self, BOTTOM_OP, CALL_OP, POSTFIX_OP, PREFIX_OP, TOP_OP},
-        parselet::{PatternAction, PostfixAction, PrefixAction},
-        prec::{Associativity, Poset},
+        builtins,
+        parselet::{PostfixAction, PostfixPatternAction, PrefixAction, PrefixPatternAction},
+        prec::{Associativity, Poset, PrecLevel},
     },
+    util::Span,
 };
+
+pub type PrefixActionTable<T> = HashMap<TokenKind, (Option<Span>, Arc<T>)>;
+pub type PostfixActionTable<T> = HashMap<TokenKind, (Option<Span>, Option<Associativity>, Arc<T>)>;
 
 pub struct SlangContext {
     pub trie: OperatorTrie,
-    pub poset: Poset<Token>,
-    pub prefix_actions: HashMap<Token, Arc<dyn PrefixAction>>,
-    pub postfix_actions: HashMap<Token, (Option<Associativity>, Arc<dyn PostfixAction>)>,
-    pub pattern_actions: HashMap<Token, Arc<dyn PatternAction>>,
+    pub poset: Poset<PrecLevel>,
+    pub prefix_actions: PrefixActionTable<dyn PrefixAction>,
+    pub postfix_actions: PostfixActionTable<dyn PostfixAction>,
+    pub prefix_pattern_actions: PrefixActionTable<dyn PrefixPatternAction>,
+    pub postfix_pattern_actions: PostfixActionTable<dyn PostfixPatternAction>,
     pub files: SimpleFiles<String, String>,
 }
 
@@ -26,16 +31,13 @@ impl SlangContext {
 
         // Add in control operators.
         poset
-            .try_add_lt(BOTTOM_OP.clone(), CALL_OP.clone())
+            .try_add_lt(PrecLevel::Bottom, PrecLevel::Call)
             .unwrap();
         poset
-            .try_add_lt(CALL_OP.clone(), PREFIX_OP.clone())
+            .try_add_lt(PrecLevel::Call, PrecLevel::Prefix)
             .unwrap();
         poset
-            .try_add_lt(PREFIX_OP.clone(), POSTFIX_OP.clone())
-            .unwrap();
-        poset
-            .try_add_lt(POSTFIX_OP.clone(), TOP_OP.clone())
+            .try_add_lt(PrecLevel::Prefix, PrecLevel::Postfix)
             .unwrap();
 
         SlangContext {
@@ -43,7 +45,8 @@ impl SlangContext {
             poset,
             prefix_actions: builtins::BUILTIN_PREFIX_ACTIONS.clone(),
             postfix_actions: builtins::BUILTIN_POSTFIX_ACTIONS.clone(),
-            pattern_actions: builtins::BUILTIN_PATTERN_ACTIONS.clone(),
+            prefix_pattern_actions: builtins::BUILTIN_PREFIX_PATTERN_ACTIONS.clone(),
+            postfix_pattern_actions: builtins::BUILTIN_POSTFIX_PATTERN_ACTIONS.clone(),
             files: SimpleFiles::new(),
         }
     }

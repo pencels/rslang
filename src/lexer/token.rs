@@ -1,7 +1,6 @@
-use crate::util::Span;
-use std::hash::Hash;
+use crate::{parser::prec::PrecLevel, util::Span};
 
-#[derive(Debug, Clone, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Token {
     pub span: Span,
     pub ty: TokenType,
@@ -20,19 +19,7 @@ impl Token {
     }
 }
 
-impl Hash for Token {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.ty.repr().hash(state)
-    }
-}
-
-impl PartialEq for Token {
-    fn eq(&self, other: &Self) -> bool {
-        self.ty.repr().eq(other.ty.repr())
-    }
-}
-
-#[derive(Debug, PartialEq, Eq, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TokenType {
     Nothing,
     Num(String),
@@ -43,11 +30,6 @@ pub enum TokenType {
     TypeId(String),
 
     Op(String),
-    BottomOp,
-    CallOp,
-    PrefixOp,
-    PostfixOp,
-    TopOp,
 
     InterpolateBegin(String),
     InterpolateContinue(String),
@@ -57,7 +39,50 @@ pub enum TokenType {
     When,
     Operator,
     Fn,
-    Struct, // TODO: this is for basic tagged structural data so that we have Cons and Nil, etc - replace with Type later
+    Struct,
+
+    LParen,
+    RParen,
+    LSquare,
+    RSquare,
+    LCurly,
+    RCurly,
+
+    Underscore,
+    ColonColon,
+    Backslash,
+    Arrow,
+    Ellipsis,
+
+    Eq,
+
+    Comma,
+    Semicolon,
+    Newline,
+    Eof,
+}
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+pub enum TokenKind {
+    Nothing,
+    Num,
+    Str,
+    Atom,
+
+    Id,
+    TypeId,
+
+    Op(String),
+
+    InterpolateBegin,
+    InterpolateContinue,
+    InterpolateEnd,
+
+    Let,
+    When,
+    Operator,
+    Fn,
+    Struct,
 
     LParen,
     RParen,
@@ -81,44 +106,59 @@ pub enum TokenType {
 }
 
 impl TokenType {
-    pub fn repr(&self) -> &str {
+    pub fn prec(&self) -> PrecLevel {
         match self {
-            TokenType::Nothing => "`Nothing",
-            TokenType::Num(_) => "`Num",
-            TokenType::Str(_) => "`Str",
-            TokenType::Atom(_) => "`Atom",
-            TokenType::Id(_) => "`Id",
-            TokenType::TypeId(_) => "`TypeId",
-            TokenType::Op(op) => op,
-            TokenType::InterpolateBegin(_) => "`InterpolateBegin",
-            TokenType::InterpolateContinue(_) => "`InterpolateContinue",
-            TokenType::InterpolateEnd(_) => "`InterpolateEnd",
-            TokenType::Let => "`Let",
-            TokenType::When => "`When",
-            TokenType::Operator => "`Operator",
-            TokenType::Fn => "`Fn",
-            TokenType::Struct => "`Struct",
-            TokenType::LParen => "`LParen",
-            TokenType::RParen => "`RParen",
-            TokenType::LSquare => "`LSquare",
-            TokenType::RSquare => "`RSquare",
-            TokenType::LCurly => "`LCurly",
-            TokenType::RCurly => "`RCurly",
-            TokenType::Underscore => "`Underscore",
-            TokenType::ColonColon => "::",
-            TokenType::Backslash => "`Backslash",
-            TokenType::Arrow => "->",
-            TokenType::Ellipsis => "...",
-            TokenType::Eq => "=",
-            TokenType::Comma => "`Comma",
-            TokenType::Semicolon => "`Semicolon",
-            TokenType::Newline => "`Newline",
-            TokenType::Eof => "`Eof",
-            TokenType::BottomOp => "`Bottom",
-            TokenType::PrefixOp => "`Prefix",
-            TokenType::PostfixOp => "`Postfix",
-            TokenType::TopOp => "`Top",
-            TokenType::CallOp => "`Call",
+            TokenType::Nothing
+            | TokenType::Num(_)
+            | TokenType::Str(_)
+            | TokenType::Atom(_)
+            | TokenType::Id(_)
+            | TokenType::TypeId(_)
+            | TokenType::LParen
+            | TokenType::LSquare
+            | TokenType::LCurly
+            | TokenType::Underscore
+            | TokenType::InterpolateBegin(_) => PrecLevel::Call,
+            TokenType::Op(op) => PrecLevel::Infix(op.clone()),
+            TokenType::Ellipsis => PrecLevel::Prefix,
+            _ => PrecLevel::Bottom,
+        }
+    }
+
+    pub fn kind(&self) -> TokenKind {
+        use TokenKind::*;
+        match self {
+            TokenType::Nothing => Nothing,
+            TokenType::Num(_) => Num,
+            TokenType::Str(_) => Str,
+            TokenType::Atom(_) => Atom,
+            TokenType::Id(_) => Id,
+            TokenType::TypeId(_) => TypeId,
+            TokenType::Op(s) => Op(s.clone()),
+            TokenType::InterpolateBegin(_) => InterpolateBegin,
+            TokenType::InterpolateContinue(_) => InterpolateContinue,
+            TokenType::InterpolateEnd(_) => InterpolateEnd,
+            TokenType::Let => Let,
+            TokenType::When => When,
+            TokenType::Operator => Operator,
+            TokenType::Fn => Fn,
+            TokenType::Struct => Struct,
+            TokenType::LParen => LParen,
+            TokenType::RParen => RParen,
+            TokenType::LSquare => LSquare,
+            TokenType::RSquare => RSquare,
+            TokenType::LCurly => LCurly,
+            TokenType::RCurly => RCurly,
+            TokenType::Underscore => Underscore,
+            TokenType::ColonColon => ColonColon,
+            TokenType::Backslash => Backslash,
+            TokenType::Arrow => Arrow,
+            TokenType::Ellipsis => Ellipsis,
+            TokenType::Eq => Eq,
+            TokenType::Comma => Comma,
+            TokenType::Semicolon => Semicolon,
+            TokenType::Newline => Newline,
+            TokenType::Eof => Eof,
         }
     }
 }

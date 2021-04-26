@@ -100,6 +100,7 @@ pub struct Expr {
 #[derive(Debug)]
 pub enum PatternKind {
     Id(String),
+    TypeId(String),
     Ignore,
     Str(String),
     Num(String),
@@ -108,7 +109,7 @@ pub enum PatternKind {
     Spread(Token),
     Strict { inner: P<Pattern>, full: bool },
     Type(Option<Token>, Token),
-    Constructor(Token, Vec<Pattern>),
+    Constructor(P<Pattern>, Vec<Pattern>),
 }
 
 #[derive(Debug)]

@@ -9,8 +9,9 @@ use std::{cmp::Ordering, collections::HashMap, sync::Arc};
 use prec::TryAddLtError;
 
 use crate::{
+    ctx::{PostfixActionTable, PrefixActionTable},
     lexer::{
-        token::{Token, TokenType},
+        token::{Token, TokenKind, TokenType},
         Lexer,
     },
     util::{FileId, Span},
@@ -18,12 +19,9 @@ use crate::{
 
 use self::{
     ast::{Defn, DefnKind, Expr, Pattern, PrecConstraint, PrecConstraintKind, Spanned},
-    builtins::{
-        expr::{BinOpParselet, PostfixOpParselet, PrefixOpParselet},
-        BOTTOM_OP, CALL_OP, POSTFIX_OP,
-    },
-    parselet::{PatternAction, PostfixAction, PrefixAction},
-    prec::{Associativity, Fixity, Poset},
+    builtins::expr::{BinOpParselet, PostfixOpParselet, PrefixOpParselet},
+    parselet::{PostfixAction, PostfixPatternAction, PrefixAction, PrefixPatternAction},
+    prec::{Associativity, Fixity, Poset, PrecLevel},
     result::{ParseError, ParseResult},
 };
 
@@ -35,20 +33,22 @@ pub struct Parser<'file, 'trie, 'prec> {
     /// The next token.
     next_token: Option<Token>,
 
-    poset: &'prec mut Poset<Token>,
-    prefix_actions: &'prec mut HashMap<Token, Arc<dyn PrefixAction>>,
-    postfix_actions: &'prec mut HashMap<Token, (Option<Associativity>, Arc<dyn PostfixAction>)>,
-    pattern_actions: &'prec mut HashMap<Token, Arc<dyn PatternAction>>,
+    poset: &'prec mut Poset<PrecLevel>,
+    prefix_actions: &'prec mut PrefixActionTable<dyn PrefixAction>,
+    postfix_actions: &'prec mut PostfixActionTable<dyn PostfixAction>,
+    prefix_pattern_actions: &'prec mut PrefixActionTable<dyn PrefixPatternAction>,
+    postfix_pattern_actions: &'prec mut PostfixActionTable<dyn PostfixPatternAction>,
 }
 
 impl<'file, 'trie, 'prec> Parser<'file, 'trie, 'prec> {
     pub fn new(
         file_id: FileId,
         lexer: Lexer<'file, 'trie>,
-        poset: &'prec mut Poset<Token>,
-        prefix_actions: &'prec mut HashMap<Token, Arc<dyn PrefixAction>>,
-        postfix_actions: &'prec mut HashMap<Token, (Option<Associativity>, Arc<dyn PostfixAction>)>,
-        pattern_actions: &'prec mut HashMap<Token, Arc<dyn PatternAction>>,
+        poset: &'prec mut Poset<PrecLevel>,
+        prefix_actions: &'prec mut PrefixActionTable<dyn PrefixAction>,
+        postfix_actions: &'prec mut PostfixActionTable<dyn PostfixAction>,
+        prefix_pattern_actions: &'prec mut PrefixActionTable<dyn PrefixPatternAction>,
+        postfix_pattern_actions: &'prec mut PostfixActionTable<dyn PostfixPatternAction>,
     ) -> Parser<'file, 'trie, 'prec> {
         Parser {
             file_id,
@@ -57,7 +57,8 @@ impl<'file, 'trie, 'prec> Parser<'file, 'trie, 'prec> {
             poset,
             prefix_actions,
             postfix_actions,
-            pattern_actions,
+            prefix_pattern_actions,
+            postfix_pattern_actions,
         }
     }
 
@@ -69,59 +70,76 @@ impl<'file, 'trie, 'prec> Parser<'file, 'trie, 'prec> {
         constraints: &[PrecConstraint],
     ) -> ParseResult<()> {
         for op in ops {
-            self.lexer.add_operator(op.ty.repr());
+            let op_str = if let TokenType::Op(ref op_str) = op.ty {
+                op_str
+            } else {
+                unreachable!("ICE: Non-operator token")
+            };
+            let op_kind = &op.ty.kind();
+
+            self.lexer.add_operator(op_str);
 
             // Register parselets.
             match fixity.item {
                 Fixity::Prefix => {
-                    if let Some((original, _)) = self.prefix_actions.get_key_value(op) {
+                    if let Some((_, (span, _))) = self.prefix_actions.get_key_value(op_kind) {
                         return Err(ParseError::RedeclaringOp {
                             span: op.span,
-                            original_span: original.span,
+                            original_span: span.unwrap(),
                             was: "prefix",
                             now: "prefix",
                         });
                     }
                     self.prefix_actions.insert(
-                        op.clone(),
-                        Arc::new(PrefixOpParselet) as Arc<dyn PrefixAction>,
+                        op_kind.clone(),
+                        (
+                            Some(op.span),
+                            Arc::new(PrefixOpParselet) as Arc<dyn PrefixAction>,
+                        ),
                     );
                 }
                 Fixity::Infix => {
-                    if let Some((original, _)) = self.postfix_actions.get_key_value(op) {
+                    if let Some((_, (span, _, _))) = self.postfix_actions.get_key_value(op_kind) {
                         return Err(ParseError::RedeclaringOp {
                             span: op.span,
-                            original_span: original.span,
+                            original_span: span.unwrap(),
                             was: "postfix or infix",
                             now: "infix",
                         });
                     }
                     self.postfix_actions.insert(
-                        op.clone(),
+                        op_kind.clone(),
                         (
+                            Some(op.span),
                             assoc.clone().map(|a| a.item),
                             Arc::new(BinOpParselet) as Arc<dyn PostfixAction>,
                         ),
                     );
                     // Insert infix ops under call precedence.
-                    self.poset.try_add_lt(op.clone(), CALL_OP.clone()).unwrap();
+                    self.poset
+                        .try_add_lt(op.ty.prec(), PrecLevel::Call)
+                        .unwrap();
                 }
                 Fixity::Postfix => {
-                    if let Some((original, _)) = self.postfix_actions.get_key_value(op) {
+                    if let Some((_, (span, _, _))) = self.postfix_actions.get_key_value(op_kind) {
                         return Err(ParseError::RedeclaringOp {
                             span: op.span,
-                            original_span: original.span,
+                            original_span: span.unwrap(),
                             was: "postfix or infix",
                             now: "infix",
                         });
                     }
                     self.postfix_actions.insert(
-                        op.clone(),
-                        (None, Arc::new(PostfixOpParselet) as Arc<dyn PostfixAction>),
+                        op_kind.clone(),
+                        (
+                            Some(op.span),
+                            None,
+                            Arc::new(PostfixOpParselet) as Arc<dyn PostfixAction>,
+                        ),
                     );
                     // Insert postfix ops as the postfix control operator.
                     self.poset
-                        .try_add_eq(op.clone(), POSTFIX_OP.clone())
+                        .try_add_eq(op.ty.prec(), PrecLevel::Postfix)
                         .unwrap();
                 }
             }
@@ -129,13 +147,13 @@ impl<'file, 'trie, 'prec> Parser<'file, 'trie, 'prec> {
             // Register precedence.
             // Operators will always be above the bottom-most prec level.
             self.poset
-                .try_add_lt(BOTTOM_OP.clone(), op.clone())
+                .try_add_lt(PrecLevel::Bottom, op.ty.prec())
                 .unwrap();
             for constraint in constraints {
                 let other_op = &constraint.op;
                 match constraint.kind.item {
                     PrecConstraintKind::Above => {
-                        match self.poset.try_add_lt(other_op.clone(), op.clone()) {
+                        match self.poset.try_add_lt(other_op.ty.prec(), op.ty.prec()) {
                             Ok(_) => {}
                             Err(TryAddLtError::Cycle) => {
                                 return Err(ParseError::PrecConstraintAddsCycle {
@@ -145,7 +163,7 @@ impl<'file, 'trie, 'prec> Parser<'file, 'trie, 'prec> {
                         }
                     }
                     PrecConstraintKind::With => {
-                        match self.poset.try_add_eq(op.clone(), other_op.clone()) {
+                        match self.poset.try_add_eq(op.ty.prec(), other_op.ty.prec()) {
                             Ok(_) => {}
                             Err(prec::TryAddEqError::Cycle) => {
                                 return Err(ParseError::PrecConstraintAddsCycle {
@@ -155,7 +173,7 @@ impl<'file, 'trie, 'prec> Parser<'file, 'trie, 'prec> {
                         }
                     }
                     PrecConstraintKind::Below => {
-                        match self.poset.try_add_lt(op.clone(), other_op.clone()) {
+                        match self.poset.try_add_lt(op.ty.prec(), other_op.ty.prec()) {
                             Ok(_) => {}
                             Err(prec::TryAddLtError::Cycle) => {
                                 return Err(ParseError::PrecConstraintAddsCycle {
@@ -340,18 +358,31 @@ impl<'file, 'trie, 'prec> Parser<'file, 'trie, 'prec> {
         Ok(())
     }
 
-    fn parse_pattern(&mut self) -> ParseResult<Pattern> {
+    fn parse_pattern(&mut self, enclosed: bool) -> ParseResult<Pattern> {
+        self.parse_pat(&PrecLevel::Bottom, enclosed)
+    }
+
+    fn parse_pat(&mut self, prec: &PrecLevel, enclosed: bool) -> ParseResult<Pattern> {
         let peeked = self.peek_expect()?;
-        let action = Self::token_or_fail("pattern", &self.pattern_actions, &peeked)?;
-        action.parse(self)
+        let (_, action) = Self::token_or_fail("pattern", &self.prefix_pattern_actions, &peeked)?;
+        let mut lhs = action.parse(self, enclosed)?;
+
+        // TODO: figure out how "enclosed" actually works...
+        if enclosed {
+            while let Some(action) = self.maybe_peek_pattern_continue(prec)? {
+                lhs = action.parse(self, Arc::new(lhs), enclosed)?;
+            }
+        }
+
+        Ok(lhs)
     }
 
     fn token_or_fail<T: Clone>(
         what: &str,
-        actions: &HashMap<Token, T>,
+        actions: &HashMap<TokenKind, T>,
         peeked: &Token,
     ) -> ParseResult<T> {
-        match actions.get(&peeked) {
+        match actions.get(&peeked.ty.kind()) {
             Some(action) => Ok(action.clone()),
             None => {
                 let mut expected_tokens = String::new();
@@ -366,7 +397,7 @@ impl<'file, 'trie, 'prec> Parser<'file, 'trie, 'prec> {
                         expected_tokens.push_str(", ");
                     }
 
-                    expected_tokens.push_str(k.ty.repr());
+                    expected_tokens.push_str(&format!("{:?}", k));
                 }
 
                 return Err(ParseError::Expected {
@@ -378,69 +409,113 @@ impl<'file, 'trie, 'prec> Parser<'file, 'trie, 'prec> {
         }
     }
 
-    pub fn peek_cmp_precedence(&mut self, op: &Token) -> ParseResult<Option<Ordering>> {
+    pub fn peek_cmp_precedence(&mut self, prec: &PrecLevel) -> ParseResult<Option<Ordering>> {
         if let Some(peeked_op) = self.peek()? {
-            Ok(self.poset.cmp(&peeked_op, op))
+            Ok(self.poset.cmp(&peeked_op.ty.prec(), prec))
         } else {
             Ok(None)
         }
     }
 
-    fn maybe_peek_expr_continue(
+    fn maybe_peek_pattern_continue(
         &mut self,
-        op: &Token,
-    ) -> ParseResult<Option<Arc<dyn PostfixAction>>> {
-        if let Some(peeked_op) = self.peek()? {
-            if let TokenType::Op(ref op) = peeked_op.ty {
-                if !self.lexer.has_operator(op) {
-                    if let TokenType::Op(op) = peeked_op.ty {
-                        return Err(ParseError::UnknownOp {
-                            span: peeked_op.span,
-                            op,
-                        });
-                    }
+        prec: &PrecLevel,
+    ) -> ParseResult<Option<Arc<dyn PostfixPatternAction>>> {
+        let peeked_op = if let Some(peeked_op) = self.peek()? {
+            peeked_op
+        } else {
+            return Ok(None);
+        };
+
+        if let TokenType::Op(ref op) = peeked_op.ty {
+            if !self.lexer.has_operator(op) {
+                if let TokenType::Op(op) = peeked_op.ty {
+                    return Err(ParseError::UnknownOp {
+                        span: peeked_op.span,
+                        op,
+                    });
                 }
             }
+        }
 
-            let (assoc, action) = if let Some(v) = self.postfix_actions.get(&peeked_op) {
+        let (_, assoc, action) =
+            if let Some(v) = self.postfix_pattern_actions.get(&peeked_op.ty.kind()) {
                 v
             } else {
                 // If no action for the token, then bail.
                 return Ok(None);
             };
 
-            // If not an actual operator, then do not do precedence comparisons.
-            match peeked_op.ty {
-                TokenType::Op(_) => {}
-                _ => return Ok(Some(action.clone())),
-            }
+        // If not an actual operator, then do not do precedence comparisons.
+        match peeked_op.ty {
+            TokenType::Op(_) => {}
+            _ => return Ok(Some(action.clone())),
+        }
 
-            match self.poset.cmp(&peeked_op, op) {
-                Some(Ordering::Greater) => Ok(Some(action.clone())),
-                Some(Ordering::Equal) => match assoc {
-                    Some(Associativity::Left) => Ok(None),
-                    Some(Associativity::Right) => Ok(Some(action.clone())),
-                    _ => Err(ParseError::NonAssocOperator {
-                        span: peeked_op.span,
-                    }),
-                },
-                _ => Ok(None),
-            }
+        match self.poset.cmp(&peeked_op.ty.prec(), prec) {
+            Some(Ordering::Greater) => Ok(Some(action.clone())),
+            Some(Ordering::Equal) => match assoc {
+                Some(Associativity::Left) => Ok(None),
+                Some(Associativity::Right) => Ok(Some(action.clone())),
+                _ => Err(ParseError::NonAssocOperator {
+                    span: peeked_op.span,
+                }),
+            },
+            _ => Ok(None),
+        }
+    }
+
+    fn maybe_peek_expr_continue(
+        &mut self,
+        op: &PrecLevel,
+    ) -> ParseResult<Option<Arc<dyn PostfixAction>>> {
+        let peeked_op = if let Some(peeked_op) = self.peek()? {
+            peeked_op
         } else {
-            Ok(None)
+            return Ok(None);
+        };
+
+        if let TokenType::Op(ref op) = peeked_op.ty {
+            if !self.lexer.has_operator(op) {
+                if let TokenType::Op(op) = peeked_op.ty {
+                    return Err(ParseError::UnknownOp {
+                        span: peeked_op.span,
+                        op,
+                    });
+                }
+            }
+        }
+
+        let (_, assoc, action) = if let Some(v) = self.postfix_actions.get(&peeked_op.ty.kind()) {
+            v
+        } else {
+            // If no action for the token, then bail.
+            return Ok(None);
+        };
+
+        match self.poset.cmp(&peeked_op.ty.prec(), op) {
+            Some(Ordering::Greater) => Ok(Some(action.clone())),
+            Some(Ordering::Equal) => match assoc {
+                Some(Associativity::Left) => Ok(None),
+                Some(Associativity::Right) => Ok(Some(action.clone())),
+                _ => Err(ParseError::NonAssocOperator {
+                    span: peeked_op.span,
+                }),
+            },
+            _ => Ok(None),
         }
     }
 
     fn parse_expression(&mut self) -> ParseResult<Expr> {
-        self.parse_expr(&BOTTOM_OP)
+        self.parse_expr(&PrecLevel::Bottom)
     }
 
-    fn parse_expr(&mut self, op: &Token) -> ParseResult<Expr> {
+    fn parse_expr(&mut self, prec: &PrecLevel) -> ParseResult<Expr> {
         let peeked = self.peek_expect()?;
-        let mut lhs =
-            Self::token_or_fail("expression", &self.prefix_actions, &peeked)?.parse(self)?;
+        let (_, action) = Self::token_or_fail("expression", &self.prefix_actions, &peeked)?;
+        let mut lhs = action.parse(self)?;
 
-        while let Some(action) = self.maybe_peek_expr_continue(op)? {
+        while let Some(action) = self.maybe_peek_expr_continue(prec)? {
             lhs = action.parse(self, Arc::new(lhs))?;
         }
 

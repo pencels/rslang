@@ -20,12 +20,23 @@ pub trait PostfixAction: Send + Sync + 'static {
     ) -> ParseResult<Expr>;
 }
 
-pub trait PatternAction: Send + Sync + 'static {
+pub trait PrefixPatternAction: Send + Sync + 'static {
     fn parse<'file, 'trie, 'prec>(
         &self,
         parser: &mut Parser<'file, 'trie, 'prec>,
+        enclosed: bool,
     ) -> ParseResult<Pattern>;
 }
+
+pub trait PostfixPatternAction: Send + Sync + 'static {
+    fn parse<'file, 'trie, 'prec>(
+        &self,
+        parser: &mut Parser<'file, 'trie, 'prec>,
+        lhs: P<Pattern>,
+        enclosed: bool,
+    ) -> ParseResult<Pattern>;
+}
+
 pub trait DefnAction: Send + Sync + 'static {
     fn parse<'file, 'trie, 'prec>(
         &self,
