@@ -71,7 +71,7 @@ pub enum ExprKind {
     Call(P<Expr>, Vec<Expr>),
     Group(Vec<Expr>),
 
-    Fn(String, Span, Vec<Pattern>, P<Expr>),
+    Fn(Option<String>, Span, Vec<Pattern>, P<Expr>),
     Lambda(Vec<Pattern>, P<Expr>),
     Matchbox(Vec<MatchboxRow>),
     Lazy(Vec<Expr>),
@@ -102,6 +102,7 @@ pub enum PatternKind {
     Id(String),
     TypeId(String),
     Ignore,
+    Atom(String),
     Str(String),
     Num(String),
     Nothing,

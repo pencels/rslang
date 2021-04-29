@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
 use super::parselet::{PostfixAction, PostfixPatternAction, PrefixAction, PrefixPatternAction};
 use crate::ctx::{PostfixActionTable, PrefixActionTable};
@@ -156,6 +156,7 @@ builtin_prefix_pattern_actions! {
     (TokenKind::TypeId, TypeIdParselet),
     (TokenKind::Underscore, pattern::IgnoreParselet),
     (TokenKind::Nothing, NothingParselet),
+    (TokenKind::Atom, AtomParselet),
     (TokenKind::Num, NumParselet),
     (TokenKind::Str, StrParselet),
     (TokenKind::LSquare, ListParselet),

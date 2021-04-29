@@ -236,7 +236,7 @@ impl<'file, 'trie> Lexer<'file, 'trie> {
                     }
                 }
                 '=' => {
-                    if is_operator_boundary(self.next_char) {
+                    if !is_operator_cont(self.next_char) {
                         self.bump(1);
                         Ok(TokenType::Eq)
                     } else {
@@ -354,7 +354,7 @@ impl<'file, 'trie> Lexer<'file, 'trie> {
         let mut operator = leading;
 
         self.bump(1);
-        while !is_operator_boundary(self.current_char) {
+        while is_operator_cont(self.current_char) {
             operator.push(self.current_char);
             self.bump(1);
         }
@@ -613,15 +613,6 @@ fn is_identifier_continuer(c: char) -> bool {
         'A'..='Z' => true,
         '0'..='9' => true,
         '_' => true,
-        _ => false,
-    }
-}
-
-/// Returns whether the character would bound an operator's characters.
-fn is_operator_boundary(c: char) -> bool {
-    match c {
-        ' ' | '\t' | '\r' | '\n' | EOF | '(' | ')' | '[' | ']' | '{' | '}' | '\\' | ',' | ';'
-        | ':' | '"' => true,
         _ => false,
     }
 }

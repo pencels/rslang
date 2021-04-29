@@ -43,7 +43,7 @@ fn handle_command(command: &str, ctx: &mut SlangContext) {
             Err(err) => eprintln!("{}", err),
             _ => {}
         },
-        "help" => println!("Commands: .lex"),
+        "help" => println!("Commands: .lex .run .help"),
         cmd => println!("Unrecognized command: `{}`", cmd),
     }
 }

@@ -12,8 +12,8 @@ use crate::{
 };
 
 use super::{
-    CallParselet, GroupParselet, IdParselet, ListParselet, NothingParselet, NumParselet,
-    SpreadParselet, StrParselet, TypeIdParselet,
+    AtomParselet, CallParselet, GroupParselet, IdParselet, ListParselet, NothingParselet,
+    NumParselet, SpreadParselet, StrParselet, TypeIdParselet,
 };
 
 impl PrefixPatternAction for IdParselet {
@@ -70,6 +70,27 @@ impl PrefixPatternAction for TypeIdParselet {
         Ok(Pattern {
             span: id.span,
             kind: PatternKind::TypeId(s),
+        })
+    }
+}
+
+impl PrefixPatternAction for AtomParselet {
+    fn parse<'file, 'trie, 'prec>(
+        &self,
+        parser: &mut crate::parser::Parser<'file, 'trie, 'prec>,
+        _enclosed: bool,
+    ) -> ParseResult<Pattern> {
+        let id = parser.eat_expect_atom()?;
+
+        let s = if let TokenType::Atom(s) = id.ty {
+            s
+        } else {
+            unreachable!("ICE: AtomParselet not called with Atom token");
+        };
+
+        Ok(Pattern {
+            span: id.span,
+            kind: PatternKind::Atom(s),
         })
     }
 }
@@ -191,6 +212,15 @@ impl PrefixPatternAction for ListParselet {
             TokenType::Comma,
             TokenType::RSquare,
         )?;
+
+        if let Some((_, init)) = pats.split_last() {
+            if let Some(spread) = init
+                .iter()
+                .find(|pat| matches!(pat.kind, PatternKind::Spread(_)))
+            {
+                return Err(ParseError::SpreadNotAtEnd { span: spread.span });
+            }
+        }
 
         Ok(Pattern {
             span: lsq.span.unite(end.span),

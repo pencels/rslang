@@ -106,4 +106,10 @@ pub enum ParseError {
         #[primary]
         span: Span,
     },
+
+    #[message = "Spread patterns are only allowed at the end of list or argument patterns"]
+    SpreadNotAtEnd {
+        #[primary]
+        span: Span,
+    },
 }

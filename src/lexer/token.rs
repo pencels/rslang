@@ -10,13 +10,6 @@ impl Token {
     pub fn new(span: Span, ty: TokenType) -> Token {
         Token { span, ty }
     }
-
-    pub fn new_dummy(ty: TokenType) -> Token {
-        Token {
-            span: Span::dummy(),
-            ty,
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

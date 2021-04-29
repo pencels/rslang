@@ -1,7 +1,7 @@
 use std::{cmp::Ordering, sync::Arc};
 
 use crate::{
-    lexer::token::{Token, TokenType},
+    lexer::token::TokenType,
     parser::{
         ast::{Expr, ExprKind, MatchboxRow, Pattern, PatternKind, StringPart},
         parselet::{PostfixAction, PrefixAction},
@@ -359,18 +359,22 @@ impl PrefixAction for FnParselet {
         let mut params = Vec::new();
 
         parser.skip_newlines()?; // Allow newlines after 'fn'
-        let (name, name_span, min, max) = match parser.peek_ty()? {
+        let (name, min, max) = match parser.peek_ty()? {
             // fn (...) ...
             Some(TokenType::LParen) => {
                 params.push(self.parse_parenthesized_param(parser)?);
                 parser.skip_newlines()?;
-                let tok = parser.eat()?;
-                match tok.ty {
+                match parser.peek_ty()? {
                     // fn (...) + ...
-                    TokenType::Op(name) => (name, tok.span, 1, Some(2)),
-                    // fn (...) :foo ...
-                    TokenType::Atom(name) => (name, tok.span, 1, None),
-                    _ => unreachable!(),
+                    Some(TokenType::Op(op)) => {
+                        let tok = parser.eat()?;
+                        params.push(Pattern {
+                            span: tok.span,
+                            kind: PatternKind::Atom(op),
+                        });
+                        (None, 2, Some(3))
+                    }
+                    _ => (None, 2, None),
                 }
             }
             // fn foo ...
@@ -378,8 +382,7 @@ impl PrefixAction for FnParselet {
                 let id = parser.eat()?;
                 parser.skip_newlines()?; // Allow newlines between fn name and params
                 match parser.peek_ty()? {
-                    Some(TokenType::Op(name)) => {
-                        let tok = parser.eat()?;
+                    Some(TokenType::Op(op)) => {
                         let param = match id.ty {
                             TokenType::Id(name) => name,
                             _ => unreachable!(),
@@ -388,39 +391,29 @@ impl PrefixAction for FnParselet {
                             span: id.span,
                             kind: PatternKind::Id(param),
                         });
-                        (name, tok.span, 1, Some(2))
-                    }
-                    Some(TokenType::Atom(name)) => {
                         let tok = parser.eat()?;
-                        let param = match id.ty {
-                            TokenType::Id(name) => name,
-                            _ => unreachable!(),
-                        };
                         params.push(Pattern {
-                            span: id.span,
-                            kind: PatternKind::Id(param),
+                            span: tok.span,
+                            kind: PatternKind::Atom(op),
                         });
-                        (name, tok.span, 1, None)
+                        (None, 2, Some(3))
                     }
                     _ => match id.ty {
-                        TokenType::Id(name) => (name, id.span, 0, None),
+                        TokenType::Id(name) => (Some(name), 0, None),
                         _ => unreachable!(),
                     },
                 }
             }
             // fn + ...
-            Some(TokenType::Op(name)) => {
+            Some(TokenType::Op(op)) => {
                 let tok = parser.eat()?;
-                (name, tok.span, 1, Some(1))
-            }
-            _ => {
-                let tok = parser.eat()?;
-                return Err(ParseError::Expected {
+                params.push(Pattern {
                     span: tok.span,
-                    expected: "fn name or parameter".to_string(),
-                    got: tok,
+                    kind: PatternKind::Atom(op),
                 });
+                (None, 2, Some(2))
             }
+            _ => (None, 2, None),
         };
 
         // Parse the rest of the parameters.
@@ -434,11 +427,17 @@ impl PrefixAction for FnParselet {
         parser.eat()?; // Eat the =
         parser.skip_newlines()?;
 
+        let param_span = if let (Some(first), Some(last)) = (params.first(), params.last()) {
+            first.span.unite(last.span)
+        } else {
+            f.span
+        };
+
         let num_params = params.len();
         if num_params < min || max.map_or(false, |max| num_params > max) {
-            let last_param_span = params.last().map_or(name_span, |last| last.span);
+            let last_param_span = params.last().map_or(param_span, |last| last.span);
             return Err(ParseError::InvalidNumberOfFnParams {
-                name_span,
+                name_span: param_span,
                 last_param_span,
                 min,
                 max,
@@ -446,11 +445,20 @@ impl PrefixAction for FnParselet {
             });
         }
 
+        if let Some((_, init)) = params.split_last() {
+            if let Some(spread) = init
+                .iter()
+                .find(|pat| matches!(pat.kind, PatternKind::Spread(_)))
+            {
+                return Err(ParseError::SpreadNotAtEnd { span: spread.span });
+            }
+        }
+
         let result = parser.parse_expression()?;
 
         Ok(Expr {
             span: f.span.unite(result.span),
-            kind: ExprKind::Fn(name, name_span, params, Arc::new(result)),
+            kind: ExprKind::Fn(name, param_span, params, Arc::new(result)),
         })
     }
 }
