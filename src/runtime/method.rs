@@ -65,7 +65,7 @@ impl Specificity for Method {
                 .reduce(|acc, ord| match (acc, ord) {
                     // If a pair is equal, don't consider it. Only consider gt/lt relationships,
                     // which must all be in the same direction.
-                    (Some(Ordering::Equal), _) | (_, Some(Ordering::Equal)) => acc,
+                    (Some(Ordering::Equal), ord) | (ord, Some(Ordering::Equal)) => ord,
                     _ => {
                         if acc == ord {
                             acc
