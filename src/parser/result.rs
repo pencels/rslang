@@ -112,4 +112,10 @@ pub enum ParseError {
         #[primary]
         span: Span,
     },
+
+    #[message = "Only an identifier or ignore pattern is allowed in this position"]
+    OnlyIdOrIgnore {
+        #[primary]
+        span: Span,
+    },
 }

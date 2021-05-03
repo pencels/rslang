@@ -30,7 +30,7 @@ impl PrefixPatternAction for IdParselet {
                 if enclosed {
                     let ty = parser.eat_expect_type_id()?;
                     return Ok(Pattern {
-                        span: id.span.unite(ty.span),
+                        span: id.span().unite(ty.span()),
                         kind: PatternKind::Type(Some(id), ty),
                     });
                 } else {
@@ -40,15 +40,9 @@ impl PrefixPatternAction for IdParselet {
             _ => {}
         }
 
-        let (id, id_span) = if let TokenType::Id(s) = id.ty {
-            (s, id.span)
-        } else {
-            unreachable!("ICE: IdParselet not called with Id token")
-        };
-
         Ok(Pattern {
-            span: id_span,
-            kind: PatternKind::Id(id),
+            span: id.span(),
+            kind: PatternKind::Id(id.take_item()),
         })
     }
 }
@@ -61,15 +55,9 @@ impl PrefixPatternAction for TypeIdParselet {
     ) -> ParseResult<Pattern> {
         let id = parser.eat_expect_type_id()?;
 
-        let s = if let TokenType::TypeId(s) = id.ty {
-            s
-        } else {
-            unreachable!("ICE: TypeIdParselet not called with TypeId token");
-        };
-
         Ok(Pattern {
-            span: id.span,
-            kind: PatternKind::TypeId(s),
+            span: id.span(),
+            kind: PatternKind::TypeId(id.take_item()),
         })
     }
 }
@@ -105,7 +93,7 @@ impl PrefixPatternAction for TypeParselet {
         let tok = parser.eat()?;
         let ty = parser.eat_expect_type_id()?;
         Ok(Pattern {
-            span: tok.span.unite(ty.span),
+            span: tok.span.unite(ty.span()),
             kind: PatternKind::Type(None, ty),
         })
     }
@@ -126,7 +114,7 @@ impl PrefixPatternAction for IgnoreParselet {
                 if enclosed {
                     let ty = parser.eat_expect_type_id()?;
                     return Ok(Pattern {
-                        span: id.span.unite(ty.span),
+                        span: id.span.unite(ty.span()),
                         kind: PatternKind::Type(None, ty),
                     });
                 } else {
@@ -236,10 +224,22 @@ impl PrefixPatternAction for SpreadParselet {
         _enclosed: bool,
     ) -> ParseResult<Pattern> {
         let ellipsis = parser.eat()?;
-        let id = parser.eat_expect_id()?;
+        let tok = parser.eat()?;
+
+        let kind = match tok.ty {
+            TokenType::Id(x) => PatternKind::Id(x),
+            TokenType::Underscore => PatternKind::Ignore,
+            _ => return Err(ParseError::OnlyIdOrIgnore { span: tok.span }),
+        };
+
+        let inner = Pattern {
+            kind,
+            span: tok.span,
+        };
+
         Ok(Pattern {
-            span: ellipsis.span.unite(id.span),
-            kind: PatternKind::Spread(id),
+            span: ellipsis.span.unite(tok.span),
+            kind: PatternKind::Spread(Arc::new(inner)),
         })
     }
 }

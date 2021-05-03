@@ -245,7 +245,6 @@ impl<'file, 'trie> Lexer<'file, 'trie> {
                 }
                 '-' => {
                     if is_numeric(self.next_char) {
-                        self.bump(1);
                         self.scan_numeric_literal()
                     } else if self.next_char == '>' {
                         self.bump(2);
@@ -256,7 +255,6 @@ impl<'file, 'trie> Lexer<'file, 'trie> {
                 }
                 '+' => {
                     if is_numeric(self.next_char) {
-                        self.bump(1);
                         self.scan_numeric_literal()
                     } else {
                         self.scan_custom_operator("+")

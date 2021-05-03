@@ -13,6 +13,7 @@ mod util;
 mod ctx;
 mod lexer;
 mod parser;
+mod runtime;
 mod ux;
 
 use ux::repl;

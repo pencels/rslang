@@ -80,7 +80,7 @@ impl<'file, 'trie, 'prec> Parser<'file, 'trie, 'prec> {
             self.lexer.add_operator(op_str);
 
             // Register parselets.
-            match fixity.item {
+            match fixity.item() {
                 Fixity::Prefix => {
                     if let Some((_, (span, _))) = self.prefix_actions.get_key_value(op_kind) {
                         return Err(ParseError::RedeclaringOp {
@@ -111,7 +111,7 @@ impl<'file, 'trie, 'prec> Parser<'file, 'trie, 'prec> {
                         op_kind.clone(),
                         (
                             Some(op.span),
-                            assoc.clone().map(|a| a.item),
+                            assoc.clone().map(|a| *a.item()),
                             Arc::new(BinOpParselet) as Arc<dyn PostfixAction>,
                         ),
                     );
@@ -151,13 +151,13 @@ impl<'file, 'trie, 'prec> Parser<'file, 'trie, 'prec> {
                 .unwrap();
             for constraint in constraints {
                 let other_op = &constraint.op;
-                match constraint.kind.item {
+                match constraint.kind.item() {
                     PrecConstraintKind::Above => {
                         match self.poset.try_add_lt(other_op.ty.prec(), op.ty.prec()) {
                             Ok(_) => {}
                             Err(TryAddLtError::Cycle) => {
                                 return Err(ParseError::PrecConstraintAddsCycle {
-                                    span: constraint.kind.span.unite(constraint.op.span),
+                                    span: constraint.kind.span().unite(constraint.op.span),
                                 })
                             }
                         }
@@ -167,7 +167,7 @@ impl<'file, 'trie, 'prec> Parser<'file, 'trie, 'prec> {
                             Ok(_) => {}
                             Err(prec::TryAddEqError::Cycle) => {
                                 return Err(ParseError::PrecConstraintAddsCycle {
-                                    span: constraint.kind.span.unite(constraint.op.span),
+                                    span: constraint.kind.span().unite(constraint.op.span),
                                 })
                             }
                         }
@@ -177,7 +177,7 @@ impl<'file, 'trie, 'prec> Parser<'file, 'trie, 'prec> {
                             Ok(_) => {}
                             Err(prec::TryAddLtError::Cycle) => {
                                 return Err(ParseError::PrecConstraintAddsCycle {
-                                    span: constraint.kind.span.unite(constraint.op.span),
+                                    span: constraint.kind.span().unite(constraint.op.span),
                                 })
                             }
                         }
@@ -260,10 +260,10 @@ impl<'file, 'trie, 'prec> Parser<'file, 'trie, 'prec> {
         }
     }
 
-    pub fn eat_expect_id(&mut self) -> ParseResult<Token> {
+    pub fn eat_expect_id(&mut self) -> ParseResult<Spanned<String>> {
         let tok = self.eat()?;
         match tok.ty {
-            TokenType::Id(_) => Ok(tok),
+            TokenType::Id(s) => Ok(Spanned(tok.span, s)),
             _ => Err(ParseError::Expected {
                 span: tok.span,
                 expected: "identifier".to_string(),
@@ -272,10 +272,10 @@ impl<'file, 'trie, 'prec> Parser<'file, 'trie, 'prec> {
         }
     }
 
-    pub fn eat_expect_type_id(&mut self) -> ParseResult<Token> {
+    pub fn eat_expect_type_id(&mut self) -> ParseResult<Spanned<String>> {
         let tok = self.eat()?;
         match tok.ty {
-            TokenType::TypeId(_) => Ok(tok),
+            TokenType::TypeId(s) => Ok(Spanned(tok.span, s)),
             _ => Err(ParseError::Expected {
                 span: tok.span,
                 expected: "type identifier".to_string(),
@@ -526,7 +526,7 @@ impl<'file, 'trie, 'prec> Parser<'file, 'trie, 'prec> {
         self.eat()?; // Blindly eat the "operator" keyword.
 
         let fixity = self.parse_fixity()?;
-        let assoc = if fixity.item == Fixity::Infix {
+        let assoc = if fixity.item() == &Fixity::Infix {
             Some(self.parse_associativity()?)
         } else {
             None

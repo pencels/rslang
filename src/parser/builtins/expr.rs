@@ -155,10 +155,10 @@ impl PrefixAction for SpreadParselet {
         parser: &mut Parser<'file, 'trie, 'prec>,
     ) -> ParseResult<Expr> {
         let ellipsis = parser.eat()?;
-        let id = parser.eat_expect_id()?;
+        let expr = parser.parse_expr(&PrecLevel::Prefix)?;
         Ok(Expr {
-            span: ellipsis.span.unite(id.span),
-            kind: ExprKind::Spread(id),
+            span: ellipsis.span.unite(expr.span),
+            kind: ExprKind::Spread(Arc::new(expr)),
         })
     }
 }
@@ -244,9 +244,15 @@ impl PrefixAction for PrefixOpParselet {
         let tok = parser.eat()?; // Blindly eat the operator
         let expr = parser.parse_expr(&PrecLevel::Prefix)?;
 
+        let op = if let TokenType::Op(op) = tok.ty {
+            op
+        } else {
+            unreachable!("ICE: non-op token while parsing prefix expr")
+        };
+
         Ok(Expr {
             span: tok.span.unite(expr.span),
-            kind: ExprKind::PrefixOp(tok, Arc::new(expr)),
+            kind: ExprKind::PrefixOp(tok.span, op, Arc::new(expr)),
         })
     }
 }
@@ -261,9 +267,15 @@ impl PostfixAction for BinOpParselet {
         let tok = parser.eat()?; // Blindly eat the operator
         let rhs = parser.parse_expr(&tok.ty.prec())?;
 
+        let op = if let TokenType::Op(op) = tok.ty {
+            op
+        } else {
+            unreachable!("ICE: non-op token while parsing binary expr")
+        };
+
         Ok(Expr {
             span: lhs.span.unite(rhs.span),
-            kind: ExprKind::BinOp(tok, lhs, Arc::new(rhs)),
+            kind: ExprKind::BinOp(tok.span, op, lhs, Arc::new(rhs)),
         })
     }
 }
@@ -276,9 +288,16 @@ impl PostfixAction for PostfixOpParselet {
         lhs: P<Expr>,
     ) -> ParseResult<Expr> {
         let tok = parser.eat()?; // Blindly eat the operator
+
+        let op = if let TokenType::Op(op) = tok.ty {
+            op
+        } else {
+            unreachable!("ICE: non-op token while parsing postfix expr")
+        };
+
         Ok(Expr {
             span: lhs.span.unite(tok.span),
-            kind: ExprKind::PostfixOp(tok, lhs),
+            kind: ExprKind::PostfixOp(tok.span, op, lhs),
         })
     }
 }
@@ -359,51 +378,10 @@ impl PrefixAction for FnParselet {
         let mut params = Vec::new();
 
         parser.skip_newlines()?; // Allow newlines after 'fn'
-        let (name, min, max) = match parser.peek_ty()? {
-            // fn (...) ...
-            Some(TokenType::LParen) => {
-                params.push(self.parse_parenthesized_param(parser)?);
-                parser.skip_newlines()?;
-                match parser.peek_ty()? {
-                    // fn (...) + ...
-                    Some(TokenType::Op(op)) => {
-                        let tok = parser.eat()?;
-                        params.push(Pattern {
-                            span: tok.span,
-                            kind: PatternKind::Atom(op),
-                        });
-                        (None, 2, Some(3))
-                    }
-                    _ => (None, 2, None),
-                }
-            }
-            // fn foo ...
-            Some(TokenType::Id(_)) => {
-                let id = parser.eat()?;
-                parser.skip_newlines()?; // Allow newlines between fn name and params
-                match parser.peek_ty()? {
-                    Some(TokenType::Op(op)) => {
-                        let param = match id.ty {
-                            TokenType::Id(name) => name,
-                            _ => unreachable!(),
-                        };
-                        params.push(Pattern {
-                            span: id.span,
-                            kind: PatternKind::Id(param),
-                        });
-                        let tok = parser.eat()?;
-                        params.push(Pattern {
-                            span: tok.span,
-                            kind: PatternKind::Atom(op),
-                        });
-                        (None, 2, Some(3))
-                    }
-                    _ => match id.ty {
-                        TokenType::Id(name) => (Some(name), 0, None),
-                        _ => unreachable!(),
-                    },
-                }
-            }
+
+        // Determine the min and max number of method args. This can change in response to
+        // operator method syntactic sugar.
+        let (min, max) = match parser.peek_ty()? {
             // fn + ...
             Some(TokenType::Op(op)) => {
                 let tok = parser.eat()?;
@@ -411,9 +389,24 @@ impl PrefixAction for FnParselet {
                     span: tok.span,
                     kind: PatternKind::Atom(op),
                 });
-                (None, 2, Some(2))
+                (2, Some(2))
             }
-            _ => (None, 2, None),
+            _ => {
+                params.push(self.parse_param(parser)?);
+                parser.skip_newlines()?;
+                match parser.peek_ty()? {
+                    // fn ... + ...
+                    Some(TokenType::Op(op)) => {
+                        let tok = parser.eat()?;
+                        params.push(Pattern {
+                            span: tok.span,
+                            kind: PatternKind::Atom(op),
+                        });
+                        (2, Some(3))
+                    }
+                    _ => (1, None),
+                }
+            }
         };
 
         // Parse the rest of the parameters.
@@ -458,7 +451,7 @@ impl PrefixAction for FnParselet {
 
         Ok(Expr {
             span: f.span.unite(result.span),
-            kind: ExprKind::Fn(name, param_span, params, Arc::new(result)),
+            kind: ExprKind::Fn(param_span, params, Arc::new(result)),
         })
     }
 }

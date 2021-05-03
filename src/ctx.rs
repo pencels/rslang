@@ -9,13 +9,16 @@ use crate::{
         parselet::{PostfixAction, PostfixPatternAction, PrefixAction, PrefixPatternAction},
         prec::{Associativity, Poset, PrecLevel},
     },
-    util::Span,
+    runtime::{Env, Runtime},
+    util::{Id, Span},
 };
 
 pub type PrefixActionTable<T> = HashMap<TokenKind, (Option<Span>, Arc<T>)>;
 pub type PostfixActionTable<T> = HashMap<TokenKind, (Option<Span>, Option<Associativity>, Arc<T>)>;
 
 pub struct SlangContext {
+    pub runtime: Runtime,
+    pub root_env: Id<Env>,
     pub trie: OperatorTrie,
     pub poset: Poset<PrecLevel>,
     pub prefix_actions: PrefixActionTable<dyn PrefixAction>,
@@ -40,7 +43,12 @@ impl SlangContext {
             .try_add_lt(PrecLevel::Prefix, PrecLevel::Postfix)
             .unwrap();
 
+        let mut runtime = Runtime::new();
+        let root_env = runtime.heap.alloc_env();
+
         SlangContext {
+            runtime,
+            root_env,
             trie: OperatorTrie::new(),
             poset,
             prefix_actions: builtins::BUILTIN_PREFIX_ACTIONS.clone(),
