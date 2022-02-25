@@ -9,7 +9,6 @@ operator prefix !
 operator postfix !
 
 fn :unwrap {x} = x
-fn :unravel x = x
 fn :unravel {!x} = x
 let unwrap = :unwrap
 let unravel = :unravel
