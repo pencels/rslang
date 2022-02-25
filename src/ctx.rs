@@ -18,7 +18,6 @@ pub type PostfixActionTable<T> = HashMap<TokenKind, (Option<Span>, Option<Associ
 
 pub struct SlangContext {
     pub runtime: Runtime,
-    pub root_env: Id<Env>,
     pub trie: OperatorTrie,
     pub poset: Poset<PrecLevel>,
     pub prefix_actions: PrefixActionTable<dyn PrefixAction>,
@@ -43,13 +42,13 @@ impl SlangContext {
             .try_add_lt(PrecLevel::Prefix, PrecLevel::Postfix)
             .unwrap();
 
-        let mut runtime = Runtime::new();
-        let root_env = runtime.heap.alloc_env();
+        let mut trie = OperatorTrie::new();
+
+        trie.insert_operator("<:");
 
         SlangContext {
-            runtime,
-            root_env,
-            trie: OperatorTrie::new(),
+            runtime: Runtime::new(),
+            trie,
             poset,
             prefix_actions: builtins::BUILTIN_PREFIX_ACTIONS.clone(),
             postfix_actions: builtins::BUILTIN_POSTFIX_ACTIONS.clone(),

@@ -3,7 +3,7 @@ use std::{cmp::Ordering, sync::Arc};
 use crate::{
     lexer::token::TokenType,
     parser::{
-        ast::{Pattern, PatternKind},
+        ast::{Pattern, PatternKind, Spanned},
         parselet::{PostfixPatternAction, PrefixPatternAction},
         prec::PrecLevel,
         result::{ParseError, ParseResult},
@@ -24,8 +24,8 @@ impl PrefixPatternAction for IdParselet {
     ) -> ParseResult<Pattern> {
         let id = parser.eat_expect_id()?;
 
-        match parser.peek_expect_ty()? {
-            TokenType::ColonColon => {
+        match parser.peek_ty()? {
+            Some(TokenType::ColonColon) => {
                 let col = parser.eat()?;
                 if enclosed {
                     let ty = parser.eat_expect_type_id()?;
@@ -296,9 +296,14 @@ impl PostfixPatternAction for CallParselet {
     ) -> ParseResult<Pattern> {
         let mut args = Vec::new();
 
+        let ty = if let PatternKind::TypeId(ty) = &lhs.kind {
+            Spanned(lhs.span, ty.clone())
+        } else {
+            return Err(ParseError::NonTypeIdInDestructuringPattern { span: lhs.span });
+        };
+
         loop {
             args.push(parser.parse_pattern(false)?);
-            println!("{:?}", parser.peek_ty()?);
             match parser.peek_cmp_precedence(&PrecLevel::Call)? {
                 Some(Ordering::Greater) | Some(Ordering::Equal) => {}
                 _ => break,
@@ -313,7 +318,7 @@ impl PostfixPatternAction for CallParselet {
 
         Ok(Pattern {
             span,
-            kind: PatternKind::Constructor(lhs, args),
+            kind: PatternKind::Constructor(ty, args),
         })
     }
 }

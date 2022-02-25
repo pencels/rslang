@@ -2,11 +2,11 @@ use std::{cmp::Ordering, fmt::Display};
 
 use crate::{
     lexer::token::Token,
-    runtime::method::Specificity,
+    runtime::{method::Specificity, Runtime},
     util::{pretty::Delimited, Span, P},
 };
 
-use super::prec::{Associativity, Fixity};
+use super::prec::{Associativity, Fixity, Poset};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Spanned<T>(pub Span, pub T);
@@ -39,7 +39,8 @@ pub enum DefnKind {
     },
     Struct {
         name: Spanned<String>,
-        args: Vec<Token>,
+        args: Vec<Pattern>,
+        subtype: Option<Spanned<String>>,
     },
     Expr(Expr),
 }
@@ -152,7 +153,7 @@ pub enum PatternKind {
     Spread(P<Pattern>),
     Strict { inner: P<Pattern>, full: bool },
     Type(Option<Spanned<String>>, Spanned<String>),
-    Constructor(P<Pattern>, Vec<Pattern>),
+    Constructor(Spanned<String>, Vec<Pattern>),
 }
 
 #[derive(Debug, Clone)]
@@ -162,7 +163,7 @@ pub struct Pattern {
 }
 
 impl Specificity for Pattern {
-    fn cmp_specificity(&self, other: &Self) -> Option<Ordering> {
+    fn cmp_specificity(&self, other: &Self, poset: &Poset<String>) -> Option<Ordering> {
         match &self.kind {
             // Id and Ignore are irrefutable patterns. They are the least-specific kind of pattern,
             // and are equivalent to each other in specificity.
@@ -196,9 +197,9 @@ impl Specificity for Pattern {
                     Some(Ordering::Equal)
                 }
                 PatternKind::Spread(_) => None,
-                PatternKind::Strict { .. } => todo!(),
+                PatternKind::Strict { .. } => None, // Lazy and List are different types...
                 PatternKind::Type(_, _) => Some(Ordering::Greater),
-                PatternKind::Constructor(_, _) => todo!(),
+                PatternKind::Constructor(_, _) => None,
             },
             PatternKind::Spread(_) => None, // XXX: Should not directly compare spreads...
             // Strict patterns are effectively the same as a Lazy type pattern.
@@ -222,29 +223,67 @@ impl Specificity for Pattern {
                 | PatternKind::Nothing => Some(Ordering::Less),
                 PatternKind::List(_) => Some(Ordering::Less),
                 PatternKind::Spread(_) => Some(Ordering::Less), // TODO: spreads
-                PatternKind::Strict { .. } => todo!(),
+                PatternKind::Strict { .. } if ty == "Lazy" => Some(Ordering::Equal),
+                PatternKind::Strict { .. } => None,
                 PatternKind::Type(_, Spanned(_, other_ty)) => {
                     if ty == other_ty {
                         Some(Ordering::Equal)
                     } else {
-                        None // TODO: subtyping???
+                        poset.cmp(ty, other_ty)
                     }
                 }
-                PatternKind::Constructor(_, _) => todo!(),
+                PatternKind::Constructor(_, _) => Some(Ordering::Less),
             },
-            PatternKind::Constructor(_, _) => match &other.kind {
+            PatternKind::Constructor(Spanned(_, lhs_ty), lhs_pats) => match &other.kind {
                 PatternKind::Id(_) | PatternKind::Ignore => Some(Ordering::Greater),
                 PatternKind::TypeId(_)
                 | PatternKind::Atom(_)
                 | PatternKind::Str(_)
                 | PatternKind::Num(_)
                 | PatternKind::Nothing => Some(Ordering::Less),
-                PatternKind::List(_) => todo!(),
+                PatternKind::List(_) => None, // They are mutally exclusive <3 - michael
                 PatternKind::Spread(_) => todo!(),
                 PatternKind::Strict { .. } => todo!(),
-                PatternKind::Type(_, _) => todo!(),
-                PatternKind::Constructor(_, _) => todo!(),
+                PatternKind::Type(_, _) => Some(Ordering::Greater),
+                PatternKind::Constructor(Spanned(_, rhs_ty), rhs_pats) => {
+                    if lhs_ty == rhs_ty {
+                        lhs_pats.cmp_specificity(rhs_pats, poset)
+                    } else {
+                        None
+                    }
+                }
             },
+        }
+    }
+}
+
+impl Specificity for Vec<Pattern> {
+    fn cmp_specificity(&self, other: &Self, poset: &Poset<String>) -> Option<Ordering> {
+        self.as_slice().cmp_specificity(&other.as_slice(), poset)
+    }
+}
+
+impl<'a> Specificity for &'a [Pattern] {
+    fn cmp_specificity(&self, other: &Self, poset: &Poset<String>) -> Option<Ordering> {
+        match self.len().cmp(&other.len()) {
+            Ordering::Equal => self
+                .iter()
+                .zip(other.iter())
+                .map(|(a, b)| a.cmp_specificity(b, poset))
+                .reduce(|acc, ord| match (acc, ord) {
+                    // If a pair is equal, don't consider it. Only consider gt/lt relationships,
+                    // which must all be in the same direction.
+                    (Some(Ordering::Equal), ord) | (ord, Some(Ordering::Equal)) => ord,
+                    _ => {
+                        if acc == ord {
+                            acc
+                        } else {
+                            None
+                        }
+                    }
+                })
+                .unwrap_or(Some(Ordering::Equal)),
+            ord => Some(ord),
         }
     }
 }
@@ -272,14 +311,13 @@ impl Display for Pattern {
             }
             PatternKind::Type(x, Spanned(_, ty)) => {
                 if let Some(Spanned(_, x)) = x {
-                    write!(f, "{}", x)?;
+                    write!(f, "({}::{})", x, ty)
+                } else {
+                    write!(f, "::{}", ty)
                 }
-                write!(f, "::")?;
-                write!(f, "{}", ty)
             }
-            PatternKind::Constructor(head, args) => {
-                write!(f, "{}", head)?;
-                Delimited("", " ", "", args).fmt(f)
+            PatternKind::Constructor(Spanned(_, name), args) => {
+                write!(f, "({} {})", name, Delimited("", " ", "", args))
             }
         }
     }
@@ -299,7 +337,8 @@ mod test {
             span: Span::dummy(),
             kind: PatternKind::Num("".to_string()),
         };
+        let poset = Poset::new();
 
-        assert_eq!(ignore.cmp_specificity(&num), Some(Ordering::Less));
+        assert_eq!(ignore.cmp_specificity(&num, &poset), Some(Ordering::Less));
     }
 }

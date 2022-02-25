@@ -22,7 +22,11 @@ use crate::{
     ctx::SlangContext,
     lexer::{token::Token, Lexer, OperatorTrie},
     parser::{ast::*, result::ParseResult, Parser},
-    runtime::{gesture, value::Value, Env, Runtime},
+    runtime::{
+        gesture::{self, eval_defn},
+        value::Value,
+        Env, Runtime,
+    },
     util::{pretty::Pretty, Id},
 };
 
@@ -49,7 +53,7 @@ fn handle_command(command: &str, ctx: &mut SlangContext) {
             _ => {}
         },
         "methods" => {
-            let root_env = ctx.root_env;
+            let root_env = ctx.runtime.root_env;
             let env = ctx.runtime.heap.get_env(root_env);
             let methods = env.method_table.methods();
             println!("{} methods in scope:", methods.len());
@@ -104,7 +108,8 @@ fn interpret(ctx: &mut SlangContext, source: &str, filename: &str) {
     );
 
     loop {
-        match exec_next_defn(&mut parser, &mut ctx.runtime, ctx.root_env) {
+        let root_env = ctx.runtime.root_env;
+        match exec_next_defn(&mut parser, &mut ctx.runtime, root_env) {
             Ok(None) => break,
             Ok(_) => {}
             Err(err) => {
@@ -130,34 +135,6 @@ fn exec_next_defn(
     }
 
     Ok(Some(()))
-}
-
-fn eval_defn(
-    parser: &mut Parser,
-    defn: &Defn,
-    runtime: &mut Runtime,
-    env_id: Id<Env>,
-) -> ParseResult<()> {
-    let Defn { kind, .. } = defn;
-    match kind {
-        DefnKind::Operator {
-            fixity,
-            assoc,
-            ops,
-            constraints,
-        } => {
-            parser.add_operator(fixity, assoc, ops, constraints)?;
-        }
-        DefnKind::Expr(expr) => match gesture::unravel_eval(runtime, env_id, expr) {
-            Ok(Value::Nothing) => {}
-            Ok(v) => println!("{}", Pretty(v, runtime)),
-            Err(EvalError::Msg(msg)) => println!("Error: {}", msg),
-            Err(EvalError::Panic(msg)) => println!("Panicked: {}", msg),
-        },
-        _ => println!("{:#?}", kind),
-    }
-
-    Ok(())
 }
 
 fn handle_line(ctx: &mut SlangContext, line: &str, repl_index: &mut usize) {

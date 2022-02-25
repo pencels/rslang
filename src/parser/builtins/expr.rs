@@ -353,22 +353,6 @@ impl PrefixAction for GroupParselet {
 }
 
 pub struct FnParselet;
-impl FnParselet {
-    fn parse_parenthesized_param(&self, parser: &mut Parser) -> ParseResult<Pattern> {
-        parser.eat()?;
-        let param = parser.parse_pattern(true)?;
-        parser.eat_expect(TokenType::RParen)?;
-        Ok(param)
-    }
-
-    fn parse_param(&self, parser: &mut Parser) -> ParseResult<Pattern> {
-        match parser.peek_ty()? {
-            Some(TokenType::LParen) => self.parse_parenthesized_param(parser),
-            _ => parser.parse_pattern(false),
-        }
-    }
-}
-
 impl PrefixAction for FnParselet {
     fn parse<'file, 'trie, 'prec>(
         &self,
@@ -392,7 +376,7 @@ impl PrefixAction for FnParselet {
                 (2, Some(2))
             }
             _ => {
-                params.push(self.parse_param(parser)?);
+                params.push(parser.parse_param()?);
                 parser.skip_newlines()?;
                 match parser.peek_ty()? {
                     // fn ... + ...
@@ -415,7 +399,7 @@ impl PrefixAction for FnParselet {
             if parser.check(&TokenType::Eq)? {
                 break;
             }
-            params.push(self.parse_param(parser)?);
+            params.push(parser.parse_param()?);
         }
         parser.eat()?; // Eat the =
         parser.skip_newlines()?;

@@ -23,8 +23,14 @@ pub enum ParseError {
         span: Span,
     },
 
-    #[message = "Atom starting colon was given but no valid atom characters after it were found"]
+    #[message = "Empty atoms are not allowed"]
     EmptyAtom {
+        #[primary]
+        span: Span,
+    },
+
+    #[message = "Reached end of line or file in delimited atom"]
+    EofInDelimitedAtom {
         #[primary]
         span: Span,
     },
@@ -115,6 +121,12 @@ pub enum ParseError {
 
     #[message = "Only an identifier or ignore pattern is allowed in this position"]
     OnlyIdOrIgnore {
+        #[primary]
+        span: Span,
+    },
+
+    #[message = "Non-type used as head of destructuring pattern"]
+    NonTypeIdInDestructuringPattern {
         #[primary]
         span: Span,
     },

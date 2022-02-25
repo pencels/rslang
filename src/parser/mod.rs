@@ -18,7 +18,9 @@ use crate::{
 };
 
 use self::{
-    ast::{Defn, DefnKind, Expr, Pattern, PrecConstraint, PrecConstraintKind, Spanned},
+    ast::{
+        Defn, DefnKind, Expr, Pattern, PatternKind, PrecConstraint, PrecConstraintKind, Spanned,
+    },
     builtins::expr::{BinOpParselet, PostfixOpParselet, PrefixOpParselet},
     parselet::{PostfixAction, PostfixPatternAction, PrefixAction, PrefixPatternAction},
     prec::{Associativity, Fixity, Poset, PrecLevel},
@@ -377,6 +379,39 @@ impl<'file, 'trie, 'prec> Parser<'file, 'trie, 'prec> {
         Ok(lhs)
     }
 
+    fn parse_parenthesized_param(&mut self) -> ParseResult<Pattern> {
+        self.eat()?;
+        let param = self.parse_pattern(true)?;
+        self.eat_expect(TokenType::RParen)?;
+        Ok(param)
+    }
+
+    fn parse_param(&mut self) -> ParseResult<Pattern> {
+        match self.peek_ty()? {
+            Some(TokenType::LParen) => self.parse_parenthesized_param(),
+            _ => self.parse_pattern(false),
+        }
+    }
+
+    /*
+    fn parse_id_param(&mut self) -> ParseResult<Pattern> {
+        let param = match self.peek_ty()? {
+            Some(TokenType::LParen) => {
+                self.eat()?;
+                let param = self.parse_pattern(true)?;
+                self.eat_expect(TokenType::RParen)?;
+                param
+            }
+            _ => self.parse_pattern(false)?,
+        };
+
+        match &param.kind {
+            PatternKind::Id() =>
+            PatternKind::Type() =>
+        }
+    }
+     */
+
     fn token_or_fail<T: Clone>(
         what: &str,
         actions: &HashMap<TokenKind, T>,
@@ -681,11 +716,28 @@ impl<'file, 'trie, 'prec> Parser<'file, 'trie, 'prec> {
         let kw = self.eat_expect(TokenType::Struct)?;
 
         let name = self.eat_expect_type_id()?;
+
         let mut args = Vec::new();
         loop {
             match self.peek_ty()? {
-                Some(TokenType::Id(_)) => args.push(self.eat()?),
-                _ => break,
+                Some(TokenType::Newline) | None => break,
+                Some(TokenType::Op(op)) if op == "<:" => {
+                    self.eat()?;
+                    let subtype = self.eat_expect_type_id()?;
+
+                    return Ok(Defn {
+                        span: kw.span.unite(subtype.span()),
+                        kind: DefnKind::Struct {
+                            name,
+                            args,
+                            subtype: Some(subtype),
+                        },
+                    });
+                }
+                _ => {
+                    let pat = self.parse_pattern(false)?;
+                    args.push(pat);
+                }
             }
         }
 
@@ -697,7 +749,11 @@ impl<'file, 'trie, 'prec> Parser<'file, 'trie, 'prec> {
 
         Ok(Defn {
             span,
-            kind: DefnKind::Struct { name, args },
+            kind: DefnKind::Struct {
+                name,
+                args,
+                subtype: None,
+            },
         })
     }
 

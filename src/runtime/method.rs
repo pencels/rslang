@@ -1,18 +1,17 @@
 use std::{cmp::Ordering, fmt::Display};
 
 use crate::{
-    parser::ast::{Expr, Pattern, PatternKind},
+    parser::{
+        ast::{Expr, Pattern, PatternKind},
+        prec::Poset,
+    },
     util::{pretty::Delimited, Id, Span, P},
 };
 
-use super::{
-    gesture::{try_destructure_multiple, Binding, EvalError},
-    value::Value,
-    Env, Runtime,
-};
+use super::{gesture::EvalError, Env, Runtime};
 
 pub trait Specificity {
-    fn cmp_specificity(&self, other: &Self) -> Option<Ordering>;
+    fn cmp_specificity(&self, other: &Self, subtypes: &Poset<String>) -> Option<Ordering>;
 }
 
 #[derive(Debug)]
@@ -36,10 +35,13 @@ impl Method {
     }
 
     pub fn has_spread(&self) -> bool {
-        match &self.pats.split_last().unwrap().0.kind {
-            PatternKind::Spread(_) => true,
-            _ => false,
-        }
+        matches!(
+            self.pats.last(),
+            Some(Pattern {
+                kind: PatternKind::Spread(_),
+                ..
+            })
+        )
     }
 
     fn matching_len(&self) -> usize {
@@ -52,31 +54,8 @@ impl Method {
 }
 
 impl Specificity for Method {
-    fn cmp_specificity(&self, other: &Method) -> Option<Ordering> {
-        // TODO: deal with varargs...
-
-        // Handle fixed length case.
-        match self.pats.len().cmp(&other.pats.len()) {
-            Ordering::Equal => self
-                .pats
-                .iter()
-                .zip(&other.pats)
-                .map(|(a, b)| a.cmp_specificity(b))
-                .reduce(|acc, ord| match (acc, ord) {
-                    // If a pair is equal, don't consider it. Only consider gt/lt relationships,
-                    // which must all be in the same direction.
-                    (Some(Ordering::Equal), ord) | (ord, Some(Ordering::Equal)) => ord,
-                    _ => {
-                        if acc == ord {
-                            acc
-                        } else {
-                            None
-                        }
-                    }
-                })
-                .unwrap_or(Some(Ordering::Equal)),
-            ord => Some(ord),
-        }
+    fn cmp_specificity(&self, other: &Method, poset: &Poset<String>) -> Option<Ordering> {
+        self.pats.cmp_specificity(&other.pats, poset)
     }
 }
 
@@ -99,7 +78,11 @@ impl MethodTable {
         &self.methods
     }
 
-    pub fn insert_method(&mut self, method: Method) -> Result<(), EvalError> {
+    pub fn insert_method(
+        &mut self,
+        method: Method,
+        poset: &Poset<String>,
+    ) -> Result<(), EvalError> {
         // TODO: handle method overriding
         // match None {
         //     Some(i) => {
@@ -119,7 +102,7 @@ impl MethodTable {
 
         self.methods.push(method);
         self.methods
-            .sort_unstable_by(|a, b| b.cmp_specificity(a).unwrap_or(Ordering::Equal));
+            .sort_unstable_by(|a, b| b.cmp_specificity(a, poset).unwrap_or(Ordering::Equal));
         Ok(())
     }
 }

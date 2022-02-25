@@ -122,6 +122,13 @@ impl<'file, 'trie> Lexer<'file, 'trie> {
                     }
                 }
                 ' ' | '\t' | '\r' => self.bump(1),
+                '\\' => {
+                    if self.next_char == '\n' {
+                        self.bump(2); // Backslashes escape newlines
+                    } else {
+                        break;
+                    }
+                }
                 _ => {
                     break;
                 }
@@ -362,18 +369,41 @@ impl<'file, 'trie> Lexer<'file, 'trie> {
 
     /// Scans an atom token.
     fn scan_atom(&mut self) -> ParseResult<TokenType> {
+        let start_pos = self.current_pos;
         self.bump(1); // Eat the leading colon.
         let mut atom = String::new();
 
-        // An atom can have any character following it, up until whitespace, delimiter/sequencing
-        // characters, or the start of another atom/string.
-        loop {
-            match self.current_char {
-                ' ' | '\t' | '\r' | '\n' | EOF | '(' | ')' | '[' | ']' | '{' | '}' | '\\' | ','
-                | ';' | ':' | '"' => break,
-                _ => {
-                    atom.push(self.current_char);
-                    self.bump(1);
+        if self.current_char == '`' {
+            // Atoms can be delimited using backticks.
+            self.bump(1);
+            loop {
+                match self.current_char {
+                    EOF => {
+                        return Err(ParseError::EofInDelimitedAtom {
+                            span: Span::new(self.file_id, self.current_pos, self.current_pos),
+                        })
+                    }
+                    '`' => {
+                        self.bump(1);
+                        break;
+                    }
+                    _ => {
+                        atom.push(self.current_char);
+                        self.bump(1);
+                    }
+                }
+            }
+        } else {
+            // An undelimited atom can have any character following it, up until whitespace,
+            // delimiter/sequencing characters, or the start of another atom/string.
+            loop {
+                match self.current_char {
+                    ' ' | '\t' | '\r' | '\n' | EOF | '(' | ')' | '[' | ']' | '{' | '}' | '\\'
+                    | ',' | ';' | ':' | '"' | '`' => break,
+                    _ => {
+                        atom.push(self.current_char);
+                        self.bump(1);
+                    }
                 }
             }
         }
@@ -381,7 +411,7 @@ impl<'file, 'trie> Lexer<'file, 'trie> {
         // No empty atoms :)
         if atom.len() == 0 {
             Err(ParseError::EmptyAtom {
-                span: Span::new(self.file_id, self.current_pos - 1, self.current_pos),
+                span: Span::new(self.file_id, start_pos, self.current_pos),
             })
         } else {
             Ok(TokenType::Atom(atom))
@@ -663,7 +693,8 @@ fn is_operator_start(c: char) -> bool {
 
 fn is_operator_cont(c: char) -> bool {
     match c {
-        '\u{0300}'..='\u{036F}'
+        ':'
+        | '\u{0300}'..='\u{036F}'
         | '\u{1dc0}'..='\u{1dff}'
         | '\u{20d0}'..='\u{20ff}'
         | '\u{fe00}'..='\u{fe0f}'
